@@ -1,0 +1,16 @@
+[package]
+name = "flowline"
+version = "0.3.0"
+edition = "2021"
+description = "Hold-to-talk dictation for macOS: on-device speech-to-text, transforms, and meeting notes."
+repository = "https://github.com/manu-tech-code/flowline"
+
+[dependencies]
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+opt-level = 2

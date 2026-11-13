@@ -1,0 +1,12 @@
+# Build output and local state
+/target
+/dist/Flowline.app
+/dist/*.dmg
+/dist/*.sha256
+/vendor/whisper/build
+/vendor/whisper/whisper-cli
+
+# Screenshots and scratch files from development runs
+/shots
+/tmp
+.DS_Store

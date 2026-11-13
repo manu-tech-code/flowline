@@ -1,0 +1,214 @@
+use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, FontId};
+
+pub const SAND_50: Color32 = Color32::from_rgb(0xfc, 0xfc, 0xfb);
+pub const SAND_100: Color32 = Color32::from_rgb(0xfa, 0xf9, 0xf7);
+pub const SAND_200: Color32 = Color32::from_rgb(0xf8, 0xf7, 0xf3);
+pub const SAND_300: Color32 = Color32::from_rgb(0xf7, 0xf6, 0xf2);
+pub const SAND_500: Color32 = Color32::from_rgb(0xf5, 0xf4, 0xf0);
+pub const SAND_600: Color32 = Color32::from_rgb(0xee, 0xeb, 0xe3);
+pub const SAND_700: Color32 = Color32::from_rgb(0xc5, 0xc0, 0xb3);
+pub const SAND_800: Color32 = Color32::from_rgb(0xa3, 0x9d, 0x8e);
+pub const SAND_900: Color32 = Color32::from_rgb(0x73, 0x6e, 0x62);
+
+pub const VAST_50: Color32 = Color32::from_rgb(0xe9, 0xe8, 0xe1);
+pub const VAST_200: Color32 = Color32::from_rgb(0xc8, 0xc8, 0xc2);
+pub const VAST_400: Color32 = Color32::from_rgb(0x9d, 0x9c, 0x98);
+pub const VAST_600: Color32 = Color32::from_rgb(0x71, 0x71, 0x6e);
+pub const VAST_800: Color32 = Color32::from_rgb(0x46, 0x45, 0x44);
+pub const VAST_900: Color32 = Color32::from_rgb(0x30, 0x30, 0x2f);
+pub const VAST_925: Color32 = Color32::from_rgb(0x20, 0x20, 0x20);
+pub const VAST_950: Color32 = Color32::from_rgb(0x1a, 0x1a, 0x1a);
+
+pub const SIGNAL_500: Color32 = Color32::from_rgb(0xff, 0xbc, 0xf2);
+pub const GLOW_300: Color32 = Color32::from_rgb(0xff, 0xa9, 0x46);
+pub const FATHOM_500: Color32 = Color32::from_rgb(0x68, 0xbd, 0xb0);
+pub const CHORD_500: Color32 = Color32::from_rgb(0x96, 0x5a, 0xce);
+pub const RED_450: Color32 = Color32::from_rgb(0xff, 0x57, 0x57);
+pub const LUMEN_500: Color32 = Color32::from_rgb(0xf7, 0xf7, 0xdb);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Palette {
+    pub dark: bool,
+}
+
+impl Palette {
+    pub fn bg(&self) -> Color32 {
+        if self.dark {
+            VAST_950
+        } else {
+            SAND_100
+        }
+    }
+    pub fn canvas(&self) -> Color32 {
+        if self.dark {
+            Color32::from_rgb(0x16, 0x16, 0x16)
+        } else {
+            SAND_50
+        }
+    }
+    pub fn sidebar(&self) -> Color32 {
+        if self.dark {
+            Color32::from_rgb(0x1f, 0x1f, 0x1e)
+        } else {
+            SAND_500
+        }
+    }
+    pub fn card(&self) -> Color32 {
+        if self.dark {
+            VAST_925
+        } else {
+            Color32::WHITE
+        }
+    }
+    pub fn card_alt(&self) -> Color32 {
+        if self.dark {
+            Color32::from_rgb(0x26, 0x26, 0x25)
+        } else {
+            SAND_100
+        }
+    }
+    pub fn border(&self) -> Color32 {
+        if self.dark {
+            Color32::from_rgb(0x34, 0x34, 0x32)
+        } else {
+            SAND_600
+        }
+    }
+    pub fn border_strong(&self) -> Color32 {
+        if self.dark {
+            Color32::from_rgb(0x46, 0x46, 0x44)
+        } else {
+            SAND_700
+        }
+    }
+    pub fn text(&self) -> Color32 {
+        if self.dark {
+            VAST_50
+        } else {
+            VAST_950
+        }
+    }
+    pub fn text_muted(&self) -> Color32 {
+        if self.dark {
+            VAST_200
+        } else {
+            VAST_600
+        }
+    }
+    pub fn text_faint(&self) -> Color32 {
+        if self.dark {
+            VAST_400
+        } else {
+            SAND_900
+        }
+    }
+    pub fn accent(&self) -> Color32 {
+        if self.dark {
+            SAND_100
+        } else {
+            VAST_950
+        }
+    }
+    pub fn accent_text(&self) -> Color32 {
+        if self.dark {
+            VAST_950
+        } else {
+            Color32::WHITE
+        }
+    }
+    pub fn hover(&self) -> Color32 {
+        if self.dark {
+            Color32::from_rgb(0x2b, 0x2b, 0x2a)
+        } else {
+            SAND_600
+        }
+    }
+    pub fn selection(&self) -> Color32 {
+        if self.dark {
+            Color32::from_rgb(0x3a, 0x3a, 0x38)
+        } else {
+            SAND_600
+        }
+    }
+}
+
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut defs = FontDefinitions::default();
+    let mut sans = false;
+    if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
+        defs.font_data.insert(
+            "sf".to_owned(),
+            std::sync::Arc::new(FontData::from_owned(bytes)),
+        );
+        if let Some(list) = defs.families.get_mut(&FontFamily::Proportional) {
+            list.insert(0, "sf".to_owned());
+        }
+        sans = true;
+    }
+    if !sans {
+        if let Ok(bytes) = std::fs::read("/System/Library/Fonts/Supplemental/Arial.ttf") {
+            defs.font_data.insert(
+                "sf".to_owned(),
+                std::sync::Arc::new(FontData::from_owned(bytes)),
+            );
+            if let Some(list) = defs.families.get_mut(&FontFamily::Proportional) {
+                list.insert(0, "sf".to_owned());
+            }
+        }
+    }
+    if let Ok(bytes) = std::fs::read("/System/Library/Fonts/Supplemental/Times New Roman.ttf") {
+        defs.font_data.insert(
+            "serif".to_owned(),
+            std::sync::Arc::new(FontData::from_owned(bytes)),
+        );
+        defs.families
+            .entry(FontFamily::Name("serif".into()))
+            .or_default()
+            .insert(0, "serif".to_owned());
+    }
+    if let Ok(bytes) =
+        std::fs::read("/System/Library/Fonts/Supplemental/Times New Roman Italic.ttf")
+    {
+        defs.font_data.insert(
+            "serif_i".to_owned(),
+            std::sync::Arc::new(FontData::from_owned(bytes)),
+        );
+        defs.families
+            .entry(FontFamily::Name("serif_i".into()))
+            .or_default()
+            .insert(0, "serif_i".to_owned());
+    }
+    ctx.set_fonts(defs);
+}
+
+pub fn sans(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Proportional)
+}
+
+pub fn serif(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("serif".into()))
+}
+
+pub fn serif_italic(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("serif_i".into()))
+}
+
+pub fn apply_style(ctx: &egui::Context, pal: Palette) {
+    let mut style = (*ctx.style()).clone();
+    style.visuals.dark_mode = pal.dark;
+    style.visuals.override_text_color = Some(pal.text());
+    style.visuals.panel_fill = pal.bg();
+    style.visuals.window_fill = pal.card();
+    style.visuals.extreme_bg_color = pal.card_alt();
+    style.visuals.faint_bg_color = pal.card_alt();
+    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, pal.border());
+    style.visuals.widgets.inactive.weak_bg_fill = pal.card();
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, pal.border());
+    style.visuals.widgets.hovered.weak_bg_fill = pal.hover();
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, pal.border_strong());
+    style.visuals.selection.bg_fill = pal.accent();
+    style.visuals.selection.stroke = egui::Stroke::new(1.0, pal.accent_text());
+    style.visuals.text_cursor.stroke = egui::Stroke::new(1.5, pal.text());
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    ctx.set_style(style);
+}
