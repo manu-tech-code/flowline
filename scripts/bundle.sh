@@ -79,6 +79,9 @@ else
   echo "warning: no whisper-cli to bundle. People who install this build will need Homebrew's whisper-cpp. Run scripts/build-whisper.sh first for a self-contained app." >&2
 fi
 
+# The MIT licences travel with the app, as whisper.cpp's licence requires.
+cp LICENSE THIRD-PARTY-NOTICES.md "$APP/Contents/Resources/"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

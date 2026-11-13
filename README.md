@@ -217,3 +217,8 @@ privacy → Delete all dictations** clears history.
 - `--page home|dictionary|snippets|style|transforms|scratchpad|notetaker|insights|myvoice|settings`
 - `--dark`, `--modal add-word|add-snippet|delete-word`,
   `--settings-tab general|system|data|account|about`, `--model-menu`
+
+## Licence
+
+Flowline is released under the [MIT licence](LICENSE). It bundles whisper.cpp,
+also MIT licensed; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
