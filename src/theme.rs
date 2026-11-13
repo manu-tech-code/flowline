@@ -123,6 +123,15 @@ impl Palette {
             SAND_600
         }
     }
+    /// Background behind selected text. Not the accent: the accent is the
+    /// opposite of the page, so text selected on it would be unreadable.
+    pub fn text_selection(&self) -> Color32 {
+        if self.dark {
+            Color32::from_rgb(0x3d, 0x57, 0x85)
+        } else {
+            Color32::from_rgb(0xbf, 0xd8, 0xff)
+        }
+    }
     pub fn selection(&self) -> Color32 {
         if self.dark {
             Color32::from_rgb(0x3a, 0x3a, 0x38)
@@ -206,9 +215,38 @@ pub fn apply_style(ctx: &egui::Context, pal: Palette) {
     style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, pal.border());
     style.visuals.widgets.hovered.weak_bg_fill = pal.hover();
     style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, pal.border_strong());
-    style.visuals.selection.bg_fill = pal.accent();
-    style.visuals.selection.stroke = egui::Stroke::new(1.0, pal.accent_text());
+    style.visuals.selection.bg_fill = pal.text_selection();
+    style.visuals.selection.stroke = egui::Stroke::new(1.0, pal.accent());
     style.visuals.text_cursor.stroke = egui::Stroke::new(1.5, pal.text());
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
     ctx.set_style(style);
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    fn luminance(c: Color32) -> f32 {
+        let f = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+    }
+
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn selected_text_stays_readable_in_both_themes() {
+        for dark in [false, true] {
+            let pal = Palette { dark };
+            let bg = pal.text_selection();
+            assert!(contrast(pal.text(), bg) >= 4.5, "text, dark={dark}");
+            assert!(contrast(pal.text_muted(), bg) >= 3.0, "muted, dark={dark}");
+            assert!(contrast(pal.text_faint(), bg) >= 2.4, "faint, dark={dark}");
+        }
+    }
 }
