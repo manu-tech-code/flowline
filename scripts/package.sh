@@ -38,5 +38,6 @@ if [ -n "${NOTARY_PROFILE:-}" ]; then
   xcrun stapler staple "$DMG"
 fi
 
-shasum -a 256 "$DMG" | tee "$DMG.sha256"
+# Record just the file name, so `shasum -a 256 -c` works from the download folder.
+(cd dist && shasum -a 256 "$(basename "$DMG")" | tee "$(basename "$DMG").sha256")
 echo "packaged $DMG"
