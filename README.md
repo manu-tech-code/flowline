@@ -1,8 +1,8 @@
 # Flowline
 
-Hold-to-talk dictation for macOS, written in Rust with eframe/egui. Real
-speech-to-text on this Mac or on a server you choose — there is no demo mode, no
-sample transcript and no seeded data.
+Hold-to-talk dictation for macOS and Linux, written in Rust with eframe/egui. Real
+speech-to-text on your computer or on a server you choose — there is no demo mode,
+no sample transcript and no seeded data.
 
 ## Installing
 
@@ -25,6 +25,63 @@ no other software.
 
 Then hold **Fn** in any text field, speak, and let go.
 
+## Installing on Linux
+
+Flowline for Linux is a tarball. It needs a desktop with PipeWire or PulseAudio,
+`libasound2` (present on any desktop with sound), and glibc 2.35 or newer
+(Ubuntu 22.04, Debian 12, Fedora 36 or newer).
+
+```sh
+tar xzf flowline-<version>-linux-<arch>.tar.gz && cd flowline-<version>-linux-<arch>
+sh install.sh            # optional: menu entry + icon, no root needed
+sh flowline-setup.sh     # once: keyboard and paste access, then log out and in
+./flowline               # or start it from your applications menu
+```
+
+Then open **Settings → Transcription engine** and press **Download Small**; the
+speech engine itself is inside the archive.
+
+**Shortcuts on Linux** (Linux apps cannot take keys away from each other, so
+these are chords nobody else claims):
+
+| | |
+| --- | --- |
+| Hold **Right Ctrl** (or Right Alt, or Ctrl+Space; pick in Settings) | dictate anywhere |
+| **Ctrl+Alt+Shift+1…9** | run a Transform on the selected text |
+| Hold **Ctrl+Alt+Space** | command mode |
+| **Esc** / **Ctrl+Q** | cancel / quit |
+
+How it works there, and what is different from macOS:
+
+- The shortcuts read your keyboard through the kernel (evdev), so they work on
+  X11 and Wayland. That needs the one-time `flowline-setup.sh`, which adds you to
+  the `input` group; it also lets Flowline press Ctrl+V for you through
+  `/dev/uinput`. Without it the app still works inside its window, and dictated
+  text is left on the clipboard.
+- Selected text is copied with Ctrl+Insert, never Ctrl+C, so a terminal's running
+  program is not interrupted. Pastes use Ctrl+V, Ctrl+Shift+V in a terminal, and
+  Shift+Insert when the app in front is unknown.
+- There is no tray item: closing the window keeps Flowline running, and starting
+  it again brings the window back. On Wayland a window cannot be hidden, so it is
+  minimized instead.
+- The app in front is only known on X11, so per-app tone and the terminal-aware
+  paste work there; on Wayland every app counts as "Other".
+- My Voice's learn-from-corrections is macOS-only for now (it needs the text of
+  the field you pasted into); its dictionary and statistics work everywhere.
+- Meeting detection reads `pactl` (is another app recording?) and the process
+  list; the prompt is a zenity or kdialog dialog if either is installed.
+- Optional helpers: `zenity` or `kdialog` (prompts, file picker), `pactl` (mute
+  other audio, meeting detection), `xdotool` or `wtype` (paste, if you cannot use
+  the uinput setup).
+- Speech runs on the CPU (no GPU). Models are stored in
+  `~/.local/share/flowline/models`.
+
+Linux status: new. It was built and tested in a Linux container (Ubuntu,
+including real transcription, the keyboard and paste path against the kernel's
+uinput, the clipboard under X11, and all pages rendering); it has not yet been
+used on a physical desktop, so GNOME-on-Wayland behaviour in particular is the
+least proven part.
+
 ## Building from source
 
 ```sh
@@ -40,7 +97,13 @@ build, both targets: `rustup target add aarch64-apple-darwin x86_64-apple-darwin
 `cargo run` works for development; a development run uses Homebrew's
 `whisper-cpp` if the bundled engine has not been built.
 
-To distribute without the Gatekeeper warning, sign and notarize with your own
+On Linux, `scripts/linux-docker.sh package` builds the tarball inside Docker
+(`scripts/linux-docker.sh image` first, then `whisper` once for the bundled
+speech engine, then `package`); `scripts/linux-docker.sh test` runs the tests.
+On a Linux machine, run `scripts/build-whisper-linux.sh` and
+`scripts/linux-package.sh` directly.
+
+On macOS, to distribute without the Gatekeeper warning, sign and notarize with your own
 Apple Developer ID:
 
 ```sh

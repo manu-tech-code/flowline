@@ -81,7 +81,7 @@ fn sidebar(ui: &egui::Ui, app: &mut App, pal: Palette, full: Rect) {
     );
     let g = ui.fonts(|f| f.layout_no_wrap("Local".to_owned(), sans(12.5), pal.text()));
     p.galley(Pos2::new(acc.left() + 46.0, acc.top() + 9.0), g, pal.text());
-    let g = ui.fonts(|f| f.layout_no_wrap("On this Mac".to_owned(), sans(10.0), pal.text_faint()));
+    let g = ui.fonts(|f| f.layout_no_wrap(crate::keys::local("On this Mac"), sans(10.0), pal.text_faint()));
     p.galley(
         Pos2::new(acc.left() + 46.0, acc.top() + 26.0),
         g,
@@ -170,7 +170,7 @@ fn sidebar(ui: &egui::Ui, app: &mut App, pal: Palette, full: Rect) {
             Pos2::new(tip.left() + 14.0, tip.top() + 32.0),
             Vec2::new(tip.width() - 28.0, 44.0),
         ),
-        "Transcripts and notes stay on this Mac. Audio goes only to the engine you choose.",
+        &crate::keys::local("Transcripts and notes stay on this Mac. Audio goes only to the engine you choose."),
         sans(9.5),
         pal.text_muted(),
     );
@@ -269,13 +269,15 @@ fn home(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect, time: f32
         pal.text(),
     );
     let (badge, badge_color) = engine_badge(app, pal);
+    // Sit after the title, whatever width this system's font gives it.
+    let badge_x = hero.left() + 24.0 + measure(ui, "Ready when you are", 21.0) + 16.0;
     p.circle_filled(
-        Pos2::new(hero.left() + 232.0, hero.top() + 34.0),
+        Pos2::new(badge_x + 8.0, hero.top() + 34.0),
         3.0,
         badge_color,
     );
     p.text(
-        Pos2::new(hero.left() + 242.0, hero.top() + 27.0),
+        Pos2::new(badge_x + 18.0, hero.top() + 27.0),
         egui::Align2::LEFT_TOP,
         &badge,
         sans(10.0),
@@ -283,7 +285,7 @@ fn home(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect, time: f32
     );
     // The badge is a shortcut to the engine picker.
     let badge_hit = Rect::from_min_size(
-        Pos2::new(hero.left() + 224.0, hero.top() + 22.0),
+        Pos2::new(badge_x, hero.top() + 22.0),
         Vec2::new(measure(ui, &badge, 10.0) + 34.0, 24.0),
     );
     if hovered(ui, badge_hit, "hero-engine") {
@@ -308,11 +310,13 @@ fn home(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect, time: f32
         pal.text_muted(),
     );
 
+    let choices = crate::keys::ptt_choices();
+    let (first_key, last_key) = (choices[0], choices[choices.len() - 1]);
     let key1 = Rect::from_min_size(
         Pos2::new(hero.left() + 24.0, hero.top() + 84.0),
-        Vec2::new(46.0, 26.0),
+        Vec2::new((measure(ui, first_key, 10.5) + 24.0).max(46.0), 26.0),
     );
-    key_cap(ui, pal, key1, "Fn");
+    key_cap(ui, pal, key1, first_key);
     p.text(
         Pos2::new(key1.right() + 8.0, key1.center().y),
         egui::Align2::LEFT_CENTER,
@@ -322,9 +326,9 @@ fn home(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect, time: f32
     );
     let key2 = Rect::from_min_size(
         Pos2::new(key1.right() + 30.0, hero.top() + 84.0),
-        Vec2::new(86.0, 26.0),
+        Vec2::new((measure(ui, last_key, 10.5) + 24.0).max(86.0), 26.0),
     );
-    key_cap(ui, pal, key2, "Ctrl Space");
+    key_cap(ui, pal, key2, last_key);
     p.text(
         Pos2::new(key2.right() + 8.0, key2.center().y),
         egui::Align2::LEFT_CENTER,
@@ -1802,19 +1806,19 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                 panel,
                 &mut y,
                 "Shortcuts",
-                "Hold Fn anywhere, even in another app. Ctrl Space also works.",
+                &format!(
+                    "Hold {} anywhere, even in another app. Click the key to change it.",
+                    app.state.settings.ptt
+                ),
             );
+            let kw = (measure(ui, &app.state.settings.ptt, 10.5) + 24.0).max(64.0);
             let k = Rect::from_min_size(
-                Pos2::new(panel.right() - 84.0, y - 34.0),
-                Vec2::new(64.0, 26.0),
+                Pos2::new(panel.right() - 20.0 - kw, y - 34.0),
+                Vec2::new(kw, 26.0),
             );
             key_cap(ui, pal, k, &app.state.settings.ptt);
             if click(ui, k, "ptt-cycle") {
-                app.state.settings.ptt = if app.state.settings.ptt == "Fn" {
-                    "Ctrl Space".into()
-                } else {
-                    "Fn".into()
-                };
+                app.state.settings.ptt = crate::keys::next_ptt(&app.state.settings.ptt).into();
                 crate::platform::set_hotkey_mode(&app.state.settings.ptt);
                 crate::platform::ensure_hotkey_monitor(ui.ctx().clone());
                 app.save();
@@ -1874,9 +1878,9 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                 Pos2::new(panel.left() + 24.0, y + 20.0),
                 egui::Align2::LEFT_TOP,
                 if app.uses_local_engine() {
-                    "Whisper runs on this Mac. Real transcription, no server needed."
+                    crate::keys::local("Whisper runs on this Mac. Real transcription, no server needed.")
                 } else {
-                    "Your own OpenAI-compatible server — pick an audio model or type an id."
+                    "Your own OpenAI-compatible server — pick an audio model or type an id.".to_string()
                 },
                 sans(10.0),
                 pal.text_muted(),
@@ -1902,7 +1906,8 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
             // Engine mode: on-device Whisper, or an OpenAI-compatible server.
             let local = app.uses_local_engine();
             let mut mc = panel.left() + 96.0;
-            for (label, is_local) in [("On this Mac", true), ("Server", false)] {
+            let on_device = crate::keys::local("On this Mac");
+            for (label, is_local) in [(on_device.as_str(), true), ("Server", false)] {
                 let w = measure(ui, label, 10.5) + 28.0;
                 let chip = Rect::from_min_size(Pos2::new(mc, y), Vec2::new(w, 32.0));
                 let selected = local == is_local;
@@ -1986,7 +1991,7 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                     p.text(
                         Pos2::new(panel.left() + 96.0, y - 10.0),
                         egui::Align2::LEFT_TOP,
-                        "Real speech-to-text on this Mac. Audio never leaves it.",
+                        crate::keys::local("Real speech-to-text on this Mac. Audio never leaves it."),
                         sans(9.5),
                         pal.text_faint(),
                     );
@@ -2080,7 +2085,7 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                 if secondary_button(ui, pal, folder, "Show models folder", "local-folder") {
                     if let Some(dir) = crate::engine::local_dir() {
                         let _ = std::fs::create_dir_all(&dir);
-                        let _ = std::process::Command::new("open").arg(dir).spawn();
+                        crate::platform::open_path(&dir);
                     }
                 }
                 let _ = models;
@@ -2514,7 +2519,11 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                 panel,
                 &mut y,
                 "Launch app at login",
-                "Flowline is ready when your Mac starts.",
+                if cfg!(target_os = "macos") {
+                    "Flowline is ready when your Mac starts."
+                } else {
+                    "Flowline is ready as soon as you log in."
+                },
             );
             let tr = Rect::from_min_size(
                 Pos2::new(panel.right() - 54.0, y - 38.0),
@@ -2535,23 +2544,25 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                     Err(e) => app.toast(format!("Login item could not be changed: {e}")),
                 }
             }
-            setting_row(
-                ui,
-                pal,
-                panel,
-                &mut y,
-                "Show app in dock",
-                "Hide Flowline and use only the shortcut.",
-            );
-            let tr = Rect::from_min_size(
-                Pos2::new(panel.right() - 54.0, y - 38.0),
-                Vec2::new(36.0, 20.0),
-            );
-            let on = app.state.settings.show_in_dock;
-            if toggle(ui, pal, tr, on, "set-dock") {
-                app.state.settings.show_in_dock = !on;
-                crate::platform::set_dock_visible(!on);
-                app.save();
+            if cfg!(target_os = "macos") {
+                setting_row(
+                    ui,
+                    pal,
+                    panel,
+                    &mut y,
+                    "Show app in dock",
+                    "Hide Flowline and use only the shortcut.",
+                );
+                let tr = Rect::from_min_size(
+                    Pos2::new(panel.right() - 54.0, y - 38.0),
+                    Vec2::new(36.0, 20.0),
+                );
+                let on = app.state.settings.show_in_dock;
+                if toggle(ui, pal, tr, on, "set-dock") {
+                    app.state.settings.show_in_dock = !on;
+                    crate::platform::set_dock_visible(!on);
+                    app.save();
+                }
             }
             setting_row(
                 ui,
@@ -2580,37 +2591,65 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                 pal.text(),
             );
             y += 28.0;
-            let permissions = [
-                (
-                    "Input Monitoring",
-                    "Optional. Only a fallback when Accessibility is off; Flowline never asks for it.",
-                    crate::platform::input_monitoring_granted(),
-                    "perm-input",
-                    "ListenEvent",
-                ),
-                (
-                    "Accessibility",
-                    "Lets Flowline paste the transcript into the app you were in.",
-                    crate::platform::accessibility_granted(),
-                    "perm-ax",
-                    "Accessibility",
-                ),
-                (
-                    "Microphone",
-                    "Asked the first time you record. Enable opens the pane.",
-                    crate::platform::mic_authorized(),
-                    "perm-mic",
-                    "Microphone",
-                ),
-            ];
+            let permissions = if cfg!(target_os = "macos") {
+                [
+                    (
+                        "Input Monitoring",
+                        "Optional. Only a fallback when Accessibility is off; Flowline never asks for it.",
+                        crate::platform::input_monitoring_granted(),
+                        "perm-input",
+                        "ListenEvent",
+                    ),
+                    (
+                        "Accessibility",
+                        "Lets Flowline paste the transcript into the app you were in.",
+                        crate::platform::accessibility_granted(),
+                        "perm-ax",
+                        "Accessibility",
+                    ),
+                    (
+                        "Microphone",
+                        "Asked the first time you record. Enable opens the pane.",
+                        crate::platform::mic_authorized(),
+                        "perm-mic",
+                        "Microphone",
+                    ),
+                ]
+            } else {
+                [
+                    (
+                        "Keyboard access",
+                        "Lets the global shortcut work in every app. One-time setup, then log out and in.",
+                        crate::platform::input_monitoring_granted(),
+                        "perm-input",
+                        "ListenEvent",
+                    ),
+                    (
+                        "Paste access",
+                        "Lets Flowline press Ctrl+V for you. Uses /dev/uinput, xdotool or wtype.",
+                        crate::platform::accessibility_granted(),
+                        "perm-ax",
+                        "Accessibility",
+                    ),
+                    (
+                        "Microphone",
+                        "Uses your system's default input device.",
+                        crate::platform::mic_authorized(),
+                        "perm-mic",
+                        "Microphone",
+                    ),
+                ]
+            };
             for (title, sub, ok, key, anchor) in permissions {
                 setting_row(ui, pal, panel, &mut y, title, sub);
                 let label = if ok {
                     "Allowed"
-                } else if anchor == "ListenEvent" {
+                } else if cfg!(target_os = "macos") && anchor == "ListenEvent" {
                     "Optional"
-                } else {
+                } else if cfg!(target_os = "macos") {
                     "Enable"
+                } else {
+                    "Set up"
                 };
                 let pill = Rect::from_min_size(
                     Pos2::new(panel.right() - 104.0, y - 49.0),
@@ -2632,19 +2671,26 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                     if ok { pal.text_faint() } else { pal.text() },
                 );
                 if click(ui, pill, key) {
-                    match anchor {
-                        "ListenEvent" => {
-                            crate::platform::request_input_monitoring();
-                            crate::platform::ensure_hotkey_monitor(ui.ctx().clone());
-                            crate::platform::open_privacy_pane("ListenEvent");
-                            app.toast("Allow Flowline, then reopen the app".into());
+                    if cfg!(not(target_os = "macos")) {
+                        // Linux: one command sets up keyboard and paste access.
+                        if anchor != "Microphone" {
+                            copy_linux_setup(app);
                         }
-                        "Microphone" => {
-                            crate::platform::open_privacy_pane("Microphone");
-                        }
-                        _ => {
-                            crate::platform::request_accessibility();
-                            crate::platform::open_privacy_pane("Accessibility");
+                    } else {
+                        match anchor {
+                            "ListenEvent" => {
+                                crate::platform::request_input_monitoring();
+                                crate::platform::ensure_hotkey_monitor(ui.ctx().clone());
+                                crate::platform::open_privacy_pane("ListenEvent");
+                                app.toast("Allow Flowline, then reopen the app".into());
+                            }
+                            "Microphone" => {
+                                crate::platform::open_privacy_pane("Microphone");
+                            }
+                            _ => {
+                                crate::platform::request_accessibility();
+                                crate::platform::open_privacy_pane("Accessibility");
+                            }
                         }
                     }
                 }
@@ -2712,22 +2758,24 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                 "No text field focused",
                 "The transcript waits in the popup with a Copy button until you dismiss it.",
             );
-            setting_row(
-                ui,
-                pal,
-                panel,
-                &mut y,
-                "Fn opens macOS Search?",
-                "macOS owns the Globe action; turn it off in System Settings → Keyboard so Fn reaches Flowline.",
-            );
-            let kb = Rect::from_min_size(
-                Pos2::new(panel.right() - 196.0, y - 46.0),
-                Vec2::new(172.0, 30.0),
-            );
-            if secondary_button(ui, pal, kb, "Open Keyboard settings", "open-keyboard") {
-                let _ = std::process::Command::new("open")
-                    .arg("x-apple.systempreferences:com.apple.Keyboard-Settings.extension")
-                    .spawn();
+            if cfg!(target_os = "macos") {
+                setting_row(
+                    ui,
+                    pal,
+                    panel,
+                    &mut y,
+                    "Fn opens macOS Search?",
+                    "macOS owns the Globe action; turn it off in System Settings → Keyboard so Fn reaches Flowline.",
+                );
+                let kb = Rect::from_min_size(
+                    Pos2::new(panel.right() - 196.0, y - 46.0),
+                    Vec2::new(172.0, 30.0),
+                );
+                if secondary_button(ui, pal, kb, "Open Keyboard settings", "open-keyboard") {
+                    let _ = std::process::Command::new("open")
+                        .arg("x-apple.systempreferences:com.apple.Keyboard-Settings.extension")
+                        .spawn();
+                }
             }
             if app.state.settings.popup_position == "custom" {
                 wrapped(
@@ -2754,7 +2802,7 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
             p.text(
                 Pos2::new(panel.left() + 24.0, y + 20.0),
                 egui::Align2::LEFT_TOP,
-                "Transcripts stay on this Mac. Cloud sync is off.",
+                crate::keys::local("Transcripts stay on this Mac. Cloud sync is off."),
                 sans(10.5),
                 pal.text_muted(),
             );
@@ -2859,7 +2907,7 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
             p.text(
                 Pos2::new(panel.left() + 82.0, y + 26.0),
                 egui::Align2::LEFT_TOP,
-                "No sign-in. Flowline runs on this Mac only.",
+                crate::keys::local("No sign-in. Flowline runs on this Mac only."),
                 sans(11.0),
                 pal.text_muted(),
             );
@@ -2876,8 +2924,8 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                 crate::engine::local_model_file(&app.state.settings.local_model)
                     .ok()
                     .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-                    .map(|m| format!("{m} on this Mac"))
-                    .unwrap_or_else(|| "Whisper on this Mac".into())
+                    .map(|m| crate::keys::local(&format!("{m} on this Mac")))
+                    .unwrap_or_else(|| crate::keys::local("Whisper on this Mac"))
             } else {
                 crate::engine::host_of(&app.state.settings.engine_endpoint)
                     .map(|h| format!("Server at {h}"))
@@ -2890,7 +2938,7 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                 panel,
                 &mut y,
                 "Storage",
-                "~/Library/Application Support/Flowline",
+                crate::paths::display_data_dir(),
             );
             setting_row(
                 ui,
@@ -2906,7 +2954,7 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
             );
             if secondary_button(ui, pal, open_btn, "Show data folder", "open-data") {
                 if let Some(dir) = crate::model::State::path().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
-                    let _ = std::process::Command::new("open").arg(dir).spawn();
+                    crate::platform::open_path(&dir);
                 }
             }
         }
@@ -2931,7 +2979,7 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                 pal.text_muted(),
             );
             y += 30.0;
-            wrapped(ui, Rect::from_min_size(Pos2::new(panel.left() + 24.0, y), Vec2::new(panel.width() - 48.0, 120.0)), "Hold-to-talk dictation for macOS. Audio is transcribed by Whisper on this Mac, or by an OpenAI-compatible server you choose, then pasted into the app you were using. Dictionary, snippets, styles, scratchpad and history are local.", sans(12.0), pal.text_muted());
+            wrapped(ui, Rect::from_min_size(Pos2::new(panel.left() + 24.0, y), Vec2::new(panel.width() - 48.0, 120.0)), &crate::keys::local("Hold-to-talk dictation for macOS. Audio is transcribed by Whisper on this Mac, or by an OpenAI-compatible server you choose, then pasted into the app you were using. Dictionary, snippets, styles, scratchpad and history are local."), sans(12.0), pal.text_muted());
             y += 96.0;
             p.text(
                 Pos2::new(panel.left() + 24.0, y),
@@ -2944,10 +2992,10 @@ fn settings(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
                 Pos2::new(panel.left() + 24.0, y + 20.0),
                 egui::Align2::LEFT_TOP,
                 if app.uses_local_engine() {
-                    format!(
+                    crate::keys::local(&format!(
                         "Audio pipeline: {} Hz mono · Whisper on this Mac · 20 min max",
                         crate::RECORDING_SAMPLE_RATE
-                    )
+                    ))
                 } else {
                     format!(
                         "Audio pipeline: {} Hz mono · {} · 20 min max",
@@ -3044,7 +3092,7 @@ fn modal(ui: &mut egui::Ui, app: &mut App, pal: Palette, full: Rect) {
         ),
         Modal::DeleteHistory => (
             "Delete all dictations?",
-            "This deletes every transcript and note insertion from this Mac.",
+            crate::keys::DELETE_ALL_NOTE,
             "Delete all",
         ),
     };
@@ -3328,6 +3376,16 @@ fn brand_mark(p: &egui::Painter, rect: Rect, color: Color32) {
     }
 }
 
+/// Linux: put the one-time setup command on the clipboard and say what to do.
+#[cfg(target_os = "linux")]
+fn copy_linux_setup(app: &mut App) {
+    crate::platform::copy_text(&crate::platform::setup_command());
+    app.toast("Setup command copied. Paste it in a terminal, then log out and back in.".into());
+}
+
+#[cfg(not(target_os = "linux"))]
+fn copy_linux_setup(_app: &mut App) {}
+
 fn measure(ui: &egui::Ui, text: &str, size: f32) -> f32 {
     ui.fonts(|f| {
         f.layout_no_wrap(text.to_owned(), sans(size), Color32::WHITE)
@@ -3336,8 +3394,37 @@ fn measure(ui: &egui::Ui, text: &str, size: f32) -> f32 {
     })
 }
 
-/// Native file picker through AppleScript, so no extra crate is needed.
+/// Native file picker, through AppleScript on macOS and zenity or kdialog on
+/// Linux, so no extra crate is needed.
 fn pick_wav() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let attempts: [(&str, &[&str]); 2] = [
+            (
+                "zenity",
+                &[
+                    "--file-selection",
+                    "--title=Choose a WAV recording to transcribe",
+                    "--file-filter=WAV recordings | *.wav *.WAV",
+                ],
+            ),
+            ("kdialog", &["--getopenfilename", ".", "*.wav|WAV recordings"]),
+        ];
+        for (tool, args) in attempts {
+            if let Ok(out) = std::process::Command::new(tool).args(args).output() {
+                if out.status.success() {
+                    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    return if path.is_empty() { None } else { Some(path.into()) };
+                }
+                if out.status.code() == Some(1) {
+                    return None; // cancelled
+                }
+            }
+        }
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
     let script = r#"POSIX path of (choose file with prompt "Choose a WAV recording to transcribe" of type {"public.wav"})"#;
     let out = std::process::Command::new("osascript")
         .args(["-e", script])
@@ -3351,6 +3438,7 @@ fn pick_wav() -> Option<std::path::PathBuf> {
         None
     } else {
         Some(std::path::PathBuf::from(path))
+    }
     }
 }
 
@@ -3480,29 +3568,56 @@ pub fn permissions_sheet(ui: &mut egui::Ui, app: &mut App, pal: Palette) {
             Pos2::new(card.left() + 32.0, card.top() + 68.0),
             Vec2::new(card.width() - 64.0, 54.0),
         ),
-        "Hold Fn in any app and speak. Flowline needs Accessibility to see the shortcut and to press ⌘V in the app you are using; Microphone is only open while you hold it.",
+        &if cfg!(target_os = "macos") {
+            "Hold Fn in any app and speak. Flowline needs Accessibility to see the shortcut and to press ⌘V in the app you are using; Microphone is only open while you hold it.".to_string()
+        } else {
+            format!(
+                "Hold {} in any app and speak. Flowline needs keyboard access to see the shortcut and paste access to press Ctrl+V in the app you are using; the microphone is only open while you hold it.",
+                app.state.settings.ptt
+            )
+        },
         sans(11.5),
         pal.text_muted(),
     );
 
     let mic = crate::platform::mic_status();
-    let rows = [
-        (
-            "Microphone",
-            "Records only while you hold the shortcut.",
-            mic == 3,
-        ),
-        (
-            "Accessibility",
-            "Catch Fn anywhere and paste the transcript into the frontmost field.",
-            crate::platform::accessibility_granted(),
-        ),
-        (
-            "Input Monitoring",
-            "Optional. Not needed when Accessibility is allowed.",
-            crate::platform::input_monitoring_granted(),
-        ),
-    ];
+    let rows = if cfg!(target_os = "macos") {
+        [
+            (
+                "Microphone",
+                "Records only while you hold the shortcut.",
+                mic == 3,
+            ),
+            (
+                "Accessibility",
+                "Catch Fn anywhere and paste the transcript into the frontmost field.",
+                crate::platform::accessibility_granted(),
+            ),
+            (
+                "Input Monitoring",
+                "Optional. Not needed when Accessibility is allowed.",
+                crate::platform::input_monitoring_granted(),
+            ),
+        ]
+    } else {
+        [
+            (
+                "Microphone",
+                "Records only while you hold the shortcut.",
+                mic == 3,
+            ),
+            (
+                "Keyboard access",
+                "Reads your keyboard so the shortcut works in every app. One command sets it up.",
+                crate::platform::input_monitoring_granted(),
+            ),
+            (
+                "Paste access",
+                "Presses Ctrl+V for you. Without it the text is left on your clipboard.",
+                crate::platform::accessibility_granted(),
+            ),
+        ]
+    };
     let mut y = card.top() + 136.0;
     for (title, sub, ok) in rows {
         p.circle_filled(
@@ -3534,7 +3649,7 @@ pub fn permissions_sheet(ui: &mut egui::Ui, app: &mut App, pal: Palette) {
                 "Allowed"
             } else if title == "Microphone" && mic == 0 {
                 "Ask on first use"
-            } else if title == "Input Monitoring" {
+            } else if cfg!(target_os = "macos") && title == "Input Monitoring" {
                 "Optional"
             } else {
                 "Missing"
@@ -3547,22 +3662,37 @@ pub fn permissions_sheet(ui: &mut egui::Ui, app: &mut App, pal: Palette) {
 
     let by = card.bottom() - 66.0;
     let open_ax = Rect::from_min_size(Pos2::new(card.left() + 32.0, by), Vec2::new(196.0, 38.0));
-    if primary_button(ui, pal, open_ax, "Open Accessibility", "perm-open-ax") {
-        crate::platform::request_accessibility();
-        crate::platform::open_privacy_pane("Accessibility");
-    }
-    let open_im = Rect::from_min_size(Pos2::new(card.left() + 236.0, by), Vec2::new(196.0, 38.0));
-    if secondary_button(ui, pal, open_im, "Open Input Monitoring", "perm-open-im") {
-        crate::platform::request_input_monitoring();
-        crate::platform::open_privacy_pane("ListenEvent");
+    if cfg!(target_os = "macos") {
+        if primary_button(ui, pal, open_ax, "Open Accessibility", "perm-open-ax") {
+            crate::platform::request_accessibility();
+            crate::platform::open_privacy_pane("Accessibility");
+        }
+        let open_im =
+            Rect::from_min_size(Pos2::new(card.left() + 236.0, by), Vec2::new(196.0, 38.0));
+        if secondary_button(ui, pal, open_im, "Open Input Monitoring", "perm-open-im") {
+            crate::platform::request_input_monitoring();
+            crate::platform::open_privacy_pane("ListenEvent");
+        }
+    } else if primary_button(ui, pal, open_ax, "Copy setup command", "perm-copy-setup") {
+        copy_linux_setup(app);
     }
     let check = Rect::from_min_size(Pos2::new(card.left() + 440.0, by), Vec2::new(148.0, 38.0));
     if secondary_button(ui, pal, check, "Check again", "perm-check") {
-        if crate::platform::accessibility_granted() {
-            app.show_permissions = false;
-            app.toast("Accessibility enabled — dictate anywhere with Fn".into());
+        let ready = if cfg!(target_os = "macos") {
+            crate::platform::accessibility_granted()
         } else {
+            crate::platform::input_monitoring_granted()
+        };
+        if ready {
+            app.show_permissions = false;
+            app.toast(format!(
+                "Ready: hold {} to dictate anywhere",
+                app.state.settings.ptt
+            ));
+        } else if cfg!(target_os = "macos") {
             app.toast("macOS has not granted Accessibility yet".into());
+        } else {
+            app.toast("Keyboard access is not set up yet. Run the setup command, then log out and in.".into());
         }
     }
     let later = Rect::from_min_size(Pos2::new(card.left() + 32.0, card.bottom() - 22.0), Vec2::new(120.0, 18.0));

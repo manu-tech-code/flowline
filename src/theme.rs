@@ -143,49 +143,76 @@ impl Palette {
 
 pub fn install_fonts(ctx: &egui::Context) {
     let mut defs = FontDefinitions::default();
-    let mut sans = false;
-    if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
+
+    // Put `bytes` first in `family`, registered as `name`.
+    fn add(defs: &mut FontDefinitions, name: &str, bytes: Vec<u8>, family: FontFamily) {
         defs.font_data.insert(
-            "sf".to_owned(),
+            name.to_owned(),
             std::sync::Arc::new(FontData::from_owned(bytes)),
         );
-        if let Some(list) = defs.families.get_mut(&FontFamily::Proportional) {
-            list.insert(0, "sf".to_owned());
+        defs.families.entry(family).or_default().insert(0, name.to_owned());
+    }
+    // The first readable file among `paths`.
+    fn first(paths: &[&str]) -> Option<Vec<u8>> {
+        paths.iter().find_map(|p| std::fs::read(p).ok())
+    }
+
+    let (sans, serif, serif_italic): (&[&str], &[&str], &[&str]) = if cfg!(target_os = "macos") {
+        (
+            &["/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf"],
+            &["/System/Library/Fonts/Supplemental/Times New Roman.ttf"],
+            &["/System/Library/Fonts/Supplemental/Times New Roman Italic.ttf"],
+        )
+    } else {
+        // Common locations on Debian/Ubuntu, Fedora and Arch. If none is
+        // installed the fonts bundled with egui are used.
+        (
+            &[
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+                "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+            ],
+            &[
+                "/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf",
+                "/usr/share/fonts/noto/NotoSerif-Regular.ttf",
+                "/usr/share/fonts/google-noto/NotoSerif-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+                "/usr/share/fonts/TTF/DejaVuSerif.ttf",
+                "/usr/share/fonts/dejavu-serif-fonts/DejaVuSerif.ttf",
+                "/usr/share/fonts/liberation/LiberationSerif-Regular.ttf",
+            ],
+            &[
+                "/usr/share/fonts/truetype/noto/NotoSerif-Italic.ttf",
+                "/usr/share/fonts/noto/NotoSerif-Italic.ttf",
+                "/usr/share/fonts/google-noto/NotoSerif-Italic.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf",
+                "/usr/share/fonts/TTF/DejaVuSerif-Italic.ttf",
+                "/usr/share/fonts/dejavu-serif-fonts/DejaVuSerif-Italic.ttf",
+                "/usr/share/fonts/liberation/LiberationSerif-Italic.ttf",
+            ],
+        )
+    };
+    if let Some(bytes) = first(sans) {
+        add(&mut defs, "sf", bytes, FontFamily::Proportional);
+    }
+    if let Some(bytes) = first(serif) {
+        add(&mut defs, "serif", bytes, FontFamily::Name("serif".into()));
+    }
+    if let Some(bytes) = first(serif_italic) {
+        add(&mut defs, "serif_i", bytes, FontFamily::Name("serif_i".into()));
+    }
+    // egui panics on a named family that has no fonts, so a machine without a
+    // serif font gets the regular proportional one under that name.
+    for name in ["serif", "serif_i"] {
+        let family = FontFamily::Name(name.into());
+        if !defs.families.contains_key(&family) {
+            let fallback = defs.families[&FontFamily::Proportional].clone();
+            defs.families.insert(family, fallback);
         }
-        sans = true;
-    }
-    if !sans {
-        if let Ok(bytes) = std::fs::read("/System/Library/Fonts/Supplemental/Arial.ttf") {
-            defs.font_data.insert(
-                "sf".to_owned(),
-                std::sync::Arc::new(FontData::from_owned(bytes)),
-            );
-            if let Some(list) = defs.families.get_mut(&FontFamily::Proportional) {
-                list.insert(0, "sf".to_owned());
-            }
-        }
-    }
-    if let Ok(bytes) = std::fs::read("/System/Library/Fonts/Supplemental/Times New Roman.ttf") {
-        defs.font_data.insert(
-            "serif".to_owned(),
-            std::sync::Arc::new(FontData::from_owned(bytes)),
-        );
-        defs.families
-            .entry(FontFamily::Name("serif".into()))
-            .or_default()
-            .insert(0, "serif".to_owned());
-    }
-    if let Ok(bytes) =
-        std::fs::read("/System/Library/Fonts/Supplemental/Times New Roman Italic.ttf")
-    {
-        defs.font_data.insert(
-            "serif_i".to_owned(),
-            std::sync::Arc::new(FontData::from_owned(bytes)),
-        );
-        defs.families
-            .entry(FontFamily::Name("serif_i".into()))
-            .or_default()
-            .insert(0, "serif_i".to_owned());
     }
     ctx.set_fonts(defs);
 }

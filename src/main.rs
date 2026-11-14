@@ -1,7 +1,13 @@
 #![allow(float_literal_f32_fallback)]
 #![allow(dead_code)]
 mod audio;
+#[cfg(target_os = "macos")]
 mod native_overlay;
+#[cfg(not(target_os = "macos"))]
+#[path = "native_overlay_stub.rs"]
+mod native_overlay;
+mod keys;
+mod paths;
 mod platform;
 mod dictation;
 mod engine;
@@ -165,7 +171,7 @@ fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         .map(|s| s.as_str())
 }
 
-#[link(name = "System", kind = "dylib")]
+#[cfg_attr(target_os = "macos", link(name = "System", kind = "dylib"))]
 extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
 }
@@ -183,11 +189,11 @@ fn single_instance_lock() -> InstanceLock {
     use std::os::unix::io::AsRawFd;
     const LOCK_EX: i32 = 2;
     const LOCK_NB: i32 = 4;
-    const EWOULDBLOCK: i32 = 35;
-    let Some(home) = std::env::var_os("HOME") else {
+    // errno for "would block": 35 on macOS, 11 on Linux.
+    const EWOULDBLOCK: i32 = if cfg!(target_os = "macos") { 35 } else { 11 };
+    let Some(dir) = paths::data_dir() else {
         return InstanceLock::Unavailable;
     };
-    let dir = std::path::PathBuf::from(home).join("Library/Application Support/Flowline");
     if std::fs::create_dir_all(&dir).is_err() {
         return InstanceLock::Unavailable;
     }
@@ -207,6 +213,15 @@ fn single_instance_lock() -> InstanceLock {
     } else {
         InstanceLock::Unavailable
     }
+}
+
+/// The app icon for the window (Linux; macOS takes it from the bundle).
+fn window_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../dist/icon-source.png");
+    let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some(egui::IconData { rgba: rgba.into_raw(), width, height })
 }
 
 fn main() -> eframe::Result<()> {
@@ -431,7 +446,13 @@ fn main() -> eframe::Result<()> {
         InstanceLock::Held(lock) => Some(lock),
         InstanceLock::Unavailable => None,
         InstanceLock::Duplicate => {
-            eprintln!("Flowline is already running.");
+            // With no tray item to click, launching again is how the window is
+            // reopened on Linux: ask the running copy to show itself.
+            if platform::signal_running_instance() {
+                eprintln!("Flowline is already running; showing its window.");
+            } else {
+                eprintln!("Flowline is already running.");
+            }
             return Ok(());
         }
     };
@@ -460,13 +481,28 @@ fn main() -> eframe::Result<()> {
         .and_then(|i| args.get(i + 1))
         .map(|s| s.as_str())
         .unwrap_or("home");
+    let background = args.iter().any(|a| a == "--background");
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1350.0, 850.0])
+        .with_min_inner_size([1120.0, 720.0])
+        .with_title("Flowline")
+        .with_visible(!background);
+    if cfg!(target_os = "macos") {
+        // Custom window chrome: Flowline draws its own title area and close button.
+        viewport = viewport.with_decorations(false).with_transparent(true);
+    } else {
+        // Linux desktops draw the title bar, borders and resize handles, and
+        // `app_id` ties the window to flowline.desktop (icon, dock grouping).
+        viewport = viewport.with_app_id("flowline");
+        if let Some(icon) = window_icon() {
+            viewport = viewport.with_icon(icon);
+        }
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1350.0, 850.0])
-            .with_min_inner_size([1120.0, 720.0])
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_title("Flowline"),
+        viewport,
+        // A vsynced swap can block forever on a window the compositor has
+        // hidden; Flowline must keep handling its shortcuts then.
+        vsync: cfg!(target_os = "macos"),
         ..Default::default()
     };
     eframe::run_native(
@@ -587,11 +623,13 @@ impl App {
             hotkey_denied_note: false,
             overlay_actions: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             asked_accessibility: false,
-            hidden_to_tray: false,
+            hidden_to_tray: std::env::args().any(|a| a == "--background"),
             meter: None,
             smooth_bands: [0.0; 7],
             overlay_smooth: std::sync::Arc::new(std::sync::Mutex::new([0.0; 7])),
-            show_permissions: !platform::accessibility_granted()
+            // `--no-permissions` skips the first-run sheet (screenshots, CI).
+            show_permissions: (!platform::accessibility_granted()
+                && !std::env::args().any(|a| a == "--no-permissions"))
                 || std::env::args().any(|a| a == "--show-permissions"),
             permissions_forced: std::env::args().any(|a| a == "--show-permissions"),
             popup_placed: false,
@@ -1017,10 +1055,36 @@ impl App {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn output_is_muted() -> Option<bool> {
-        if !cfg!(target_os = "macos") {
+        let out = std::process::Command::new("pactl")
+            .args(["get-sink-mute", "@DEFAULT_SINK@"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
             return None;
         }
+        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        if text.contains("yes") {
+            Some(true)
+        } else if text.contains("no") {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_output_muted(muted: bool) {
+        let _ = std::process::Command::new("pactl")
+            .args(["set-sink-mute", "@DEFAULT_SINK@", if muted { "1" } else { "0" }])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn output_is_muted() -> Option<bool> {
         let out = std::process::Command::new("osascript")
             .args(["-e", "output muted of (get volume settings)"])
             .output()
@@ -1035,10 +1099,8 @@ impl App {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn set_output_muted(muted: bool) {
-        if !cfg!(target_os = "macos") {
-            return;
-        }
         let _ = std::process::Command::new("osascript")
             .args(["-e", &format!("set volume output muted {muted}")])
             .stdout(std::process::Stdio::null())
@@ -1143,12 +1205,28 @@ impl App {
         if !self.state.settings.sounds {
             return;
         }
-        let file = if start {
-            "/System/Library/Sounds/Tink.aiff"
-        } else {
-            "/System/Library/Sounds/Pop.aiff"
-        };
-        let _ = std::process::Command::new("afplay").arg(file).spawn();
+        #[cfg(target_os = "macos")]
+        {
+            let file = if start {
+                "/System/Library/Sounds/Tink.aiff"
+            } else {
+                "/System/Library/Sounds/Pop.aiff"
+            };
+            let _ = std::process::Command::new("afplay").arg(file).spawn();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // The freedesktop sound theme, played through PipeWire/PulseAudio
+            // when both the player and the sound are there.
+            let file = if start {
+                "/usr/share/sounds/freedesktop/stereo/message.oga"
+            } else {
+                "/usr/share/sounds/freedesktop/stereo/complete.oga"
+            };
+            if std::path::Path::new(file).is_file() {
+                let _ = std::process::Command::new("paplay").arg(file).spawn();
+            }
+        }
     }
 
     fn finish_transcription(&mut self) {
@@ -1353,11 +1431,21 @@ impl eframe::App for App {
                 self.toast("Accessibility enabled — dictate anywhere with Fn".into());
             }
         }
+        if cfg!(not(target_os = "macos"))
+            && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Q))
+        {
+            self.quitting = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
             // Closing the hub leaves Flowline running in the menu bar so Fn
             // keeps working. Quit is explicit, from the menu.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            if cfg!(not(target_os = "macos")) {
+                // Wayland cannot hide a window, so also minimize it.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
             self.hidden_to_tray = true;
         }
         for event in platform::take_events() {
@@ -1372,9 +1460,7 @@ impl eframe::App for App {
                     if !self.hotkey_denied_note {
                         self.hotkey_denied_note = true;
                         platform::request_accessibility();
-                        self.toast(
-                            "Allow Accessibility for Flowline to use Fn anywhere".into(),
-                        );
+                        self.toast(platform::denied_hint().into());
                     }
                 }
             }
@@ -1662,6 +1748,31 @@ impl eframe::App for App {
         } else {
             native_overlay::hide();
             self.popup_placed = false;
+        }
+        // Without the macOS AppKit panel, the pill is an egui overlay window.
+        if cfg!(not(target_os = "macos")) {
+            if self.dict.is_active() {
+                self.show_overlay(ctx);
+            }
+            let clicks: Vec<dictation::OverlayAction> = self
+                .overlay_actions
+                .lock()
+                .map(|mut q| std::mem::take(&mut *q))
+                .unwrap_or_default();
+            for action in clicks {
+                match action {
+                    OverlayAction::Stop => self.stop_dictation(),
+                    OverlayAction::Cancel => self.cancel_dictation(),
+                    OverlayAction::Copy => {
+                        if let Phase::Done { text, copied, .. } = &mut self.dict {
+                            platform::copy_text(text);
+                            *copied = true;
+                        }
+                    }
+                    OverlayAction::Dismiss => self.dict = Phase::Idle,
+                    OverlayAction::None => {}
+                }
+            }
         }
         let native_actions = native_overlay::take_actions();
         if std::env::var_os("FLOWLINE_DEBUG").is_some() && !native_actions.is_empty() {

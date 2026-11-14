@@ -10,7 +10,9 @@
 
 #![allow(non_snake_case)]
 
+#[cfg(target_os = "macos")]
 use serde_json::Value;
+#[cfg(target_os = "macos")]
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,74 +20,6 @@ use std::sync::{Arc, Mutex};
 pub const TARGET_RATE: u32 = 16_000;
 /// 20 minutes at 16 kHz: the original's maximum dictation length.
 const MAX_SAMPLES: usize = TARGET_RATE as usize * 1200;
-
-type OSStatus = i32;
-type AudioQueueRef = *mut c_void;
-type AudioQueueBufferRef = *mut AudioQueueBuffer;
-
-#[repr(C)]
-struct AudioStreamBasicDescription {
-    mSampleRate: f64,
-    mFormatID: u32,
-    mFormatFlags: u32,
-    mBytesPerPacket: u32,
-    mFramesPerPacket: u32,
-    mBytesPerFrame: u32,
-    mChannelsPerFrame: u32,
-    mBitsPerChannel: u32,
-    mReserved: u32,
-}
-
-#[repr(C)]
-struct AudioQueueBuffer {
-    mAudioDataBytesCapacity: u32,
-    mAudioData: *mut c_void,
-    mAudioDataByteSize: u32,
-    mUserData: *mut c_void,
-    mPacketDescriptionCapacity: u32,
-    mPacketDescriptions: *mut c_void,
-    mPacketDescriptionCount: u32,
-}
-
-const K_AUDIO_FORMAT_LINEAR_PCM: u32 = 0x6C70_636D; // 'lpcm'
-const K_LINEAR_PCM_FLAG_SIGNED_INTEGER: u32 = 4;
-const K_LINEAR_PCM_FLAG_PACKED: u32 = 8;
-
-type InputCallback = extern "C" fn(
-    *mut c_void,
-    AudioQueueRef,
-    AudioQueueBufferRef,
-    *const c_void,
-    u32,
-    *const c_void,
-);
-
-#[link(name = "AudioToolbox", kind = "framework")]
-extern "C" {
-    fn AudioQueueNewInput(
-        format: *const AudioStreamBasicDescription,
-        callback: InputCallback,
-        user_data: *mut c_void,
-        run_loop: *const c_void,
-        run_loop_mode: *const c_void,
-        flags: u32,
-        out_queue: *mut AudioQueueRef,
-    ) -> OSStatus;
-    fn AudioQueueAllocateBuffer(
-        queue: AudioQueueRef,
-        byte_size: u32,
-        out_buffer: *mut AudioQueueBufferRef,
-    ) -> OSStatus;
-    fn AudioQueueEnqueueBuffer(
-        queue: AudioQueueRef,
-        buffer: AudioQueueBufferRef,
-        num_packet_descriptions: u32,
-        packet_descriptions: *const c_void,
-    ) -> OSStatus;
-    fn AudioQueueStart(queue: AudioQueueRef, start_time: *const c_void) -> OSStatus;
-    fn AudioQueueStop(queue: AudioQueueRef, immediate: u8) -> OSStatus;
-    fn AudioQueueDispose(queue: AudioQueueRef, immediate: u8) -> OSStatus;
-}
 
 struct Capture {
     samples: Mutex<Vec<i16>>,
@@ -176,233 +110,426 @@ fn band_energy(samples: &[i16]) -> [f32; 7] {
     out
 }
 
-extern "C" fn on_input(
-    user_data: *mut c_void,
-    queue: AudioQueueRef,
-    buffer: AudioQueueBufferRef,
-    _start_time: *const c_void,
-    _packets: u32,
-    _descriptions: *const c_void,
-) {
-    if user_data.is_null() || buffer.is_null() || queue.is_null() {
+/// Take a block of 16 kHz mono samples from any capture back end: keep them,
+/// update the peak level and drive the voice meters. `recent` carries the last
+/// few hundred samples between calls, because the spectrum needs 512 at a time
+/// and a sound card may deliver fewer.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn ingest(capture: &Capture, samples: &[i16], recent: &mut Vec<i16>) {
+    if samples.is_empty() {
         return;
     }
-    let capture = unsafe { &*(user_data as *const Capture) };
-    unsafe {
-        let b = &*buffer;
-        if !b.mAudioData.is_null() && b.mAudioDataByteSize >= 2 {
-            let count = (b.mAudioDataByteSize as usize) / 2;
-            let samples = std::slice::from_raw_parts(b.mAudioData as *const i16, count);
-            let mut peak = 0i32;
-            if let Ok(mut buf) = capture.samples.lock() {
-                if buf.len() < MAX_SAMPLES {
-                    buf.extend_from_slice(samples);
-                }
-                let start = samples.len().saturating_sub(64);
-                for s in &samples[start..] {
-                    peak = peak.max((*s as i32).abs());
-                }
-            }
-            capture
-                .level
-                .store(peak.min(32767) as u32, Ordering::Relaxed);
-            let raw = band_energy(samples);
-            if let Ok(mut bands) = capture.bands.lock() {
-                for (i, target) in raw.iter().enumerate() {
-                    let prev = bands[i];
-                    // Fast attack, slower release: the meter follows a voice
-                    // rather than flickering with every buffer.
-                    bands[i] = if *target > prev {
-                        prev + (target - prev) * 0.65
-                    } else {
-                        prev * 0.80 + target * 0.20
-                    };
-                }
-            }
+    if let Ok(mut buf) = capture.samples.lock() {
+        if buf.len() < MAX_SAMPLES {
+            buf.extend_from_slice(samples);
         }
-        let _ = AudioQueueEnqueueBuffer(queue, buffer, 0, std::ptr::null());
+    }
+    let tail = &samples[samples.len().saturating_sub(64)..];
+    let peak = tail.iter().map(|s| (*s as i32).abs()).max().unwrap_or(0);
+    capture.level.store(peak.min(32767) as u32, Ordering::Relaxed);
+
+    recent.extend_from_slice(samples);
+    if recent.len() > 1600 {
+        let cut = recent.len() - 1600;
+        recent.drain(..cut);
+    }
+    let raw = band_energy(&recent[recent.len().saturating_sub(512)..]);
+    if let Ok(mut bands) = capture.bands.lock() {
+        for (i, target) in raw.iter().enumerate() {
+            let prev = bands[i];
+            // Fast attack, slower release: the meter follows a voice rather
+            // than flickering with every buffer.
+            bands[i] = if *target > prev {
+                prev + (target - prev) * 0.65
+            } else {
+                prev * 0.80 + target * 0.20
+            };
+        }
     }
 }
 
-pub struct Recorder {
-    queue: AudioQueueRef,
-    capture: Arc<Capture>,
-    /// The extra Arc handed to the audio thread, freed in Drop.
-    user_data: *mut c_void,
-    started: std::time::Instant,
+/// Turn a sound card's native stream (any rate, any channel count) into 16 kHz
+/// mono, a block at a time. A short moving average first keeps the energy above
+/// 8 kHz from folding back into the speech band, then the stream is resampled
+/// by linear interpolation.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub struct Resampler {
+    ratio: f64,
+    channels: usize,
+    window: usize,
+    /// Last `window - 1` mono samples of the previous block, for the average.
+    tail: Vec<f32>,
+    /// Position of the next output sample, in input samples from this block's start.
+    pos: f64,
+    /// Last filtered sample of the previous block (index -1 of this one).
+    prev: f32,
 }
 
-unsafe impl Send for Recorder {}
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+impl Resampler {
+    pub fn new(in_rate: u32, channels: u16) -> Resampler {
+        let ratio = in_rate as f64 / TARGET_RATE as f64;
+        let window = (ratio.round() as usize).max(1);
+        Resampler {
+            ratio,
+            channels: channels.max(1) as usize,
+            window,
+            tail: vec![0.0; window - 1],
+            pos: 0.0,
+            prev: 0.0,
+        }
+    }
 
-fn error_text(status: OSStatus) -> String {
-    format!(
-        "the microphone could not start (AudioQueue code {status}). Allow Flowline in System Settings › Privacy & Security › Microphone."
-    )
+    /// `input` is interleaved f32 frames; 16 kHz mono i16 samples are appended to `out`.
+    pub fn process(&mut self, input: &[f32], out: &mut Vec<i16>) {
+        let mono: Vec<f32> = input
+            .chunks_exact(self.channels)
+            .map(|f| f.iter().sum::<f32>() / self.channels as f32)
+            .collect();
+        if mono.is_empty() {
+            return;
+        }
+        // Moving average over `window` samples, carrying state across blocks.
+        let mut padded = Vec::with_capacity(self.tail.len() + mono.len());
+        padded.extend_from_slice(&self.tail);
+        padded.extend_from_slice(&mono);
+        let filtered: Vec<f32> = (0..mono.len())
+            .map(|i| padded[i..i + self.window].iter().sum::<f32>() / self.window as f32)
+            .collect();
+        let keep = self.window - 1;
+        self.tail = padded[padded.len() - keep..].to_vec();
+
+        let n = filtered.len() as f64;
+        while self.pos <= n - 1.0 {
+            let i = self.pos.floor() as isize;
+            let frac = (self.pos - i as f64) as f32;
+            let at = |k: isize| -> f32 {
+                if k < 0 {
+                    self.prev
+                } else {
+                    filtered[(k as usize).min(filtered.len() - 1)]
+                }
+            };
+            let v = at(i) + (at(i + 1) - at(i)) * frac;
+            out.push((v.clamp(-1.0, 1.0) * 32767.0) as i16);
+            self.pos += self.ratio;
+        }
+        self.pos -= n;
+        self.prev = filtered[filtered.len() - 1];
+    }
 }
 
-impl Recorder {
-    /// Start recording 16 kHz mono PCM. `preferred` is only a hint; macOS uses
-    /// the system default input, which is the one the settings row shows.
-    pub fn start(preferred: Option<&str>) -> Result<Recorder, String> {
-        let _ = preferred;
-        let format = AudioStreamBasicDescription {
-            mSampleRate: TARGET_RATE as f64,
-            mFormatID: K_AUDIO_FORMAT_LINEAR_PCM,
-            mFormatFlags: K_LINEAR_PCM_FLAG_SIGNED_INTEGER | K_LINEAR_PCM_FLAG_PACKED,
-            mBytesPerPacket: 2,
-            mFramesPerPacket: 1,
-            mBytesPerFrame: 2,
-            mChannelsPerFrame: 1,
-            mBitsPerChannel: 16,
-            mReserved: 0,
-        };
-        let capture = Arc::new(Capture {
-            samples: Mutex::new(Vec::with_capacity(TARGET_RATE as usize * 30)),
-            level: AtomicU32::new(0),
-            bands: Arc::new(Mutex::new([0f32; 7])),
-        });
-        let user_data = Arc::into_raw(capture.clone()) as *mut c_void;
-        let mut queue: AudioQueueRef = std::ptr::null_mut();
-        let status = unsafe {
-            AudioQueueNewInput(
-                &format,
-                on_input,
+#[cfg(target_os = "macos")]
+mod mac_capture {
+    //! Apple's AudioQueue C API directly (AudioToolbox), so the app keeps its
+    //! tiny dependency list. The system resamples the microphone to 16 kHz mono
+    //! 16-bit PCM for us.
+    use super::*;
+
+    type OSStatus = i32;
+    type AudioQueueRef = *mut c_void;
+    type AudioQueueBufferRef = *mut AudioQueueBuffer;
+
+    #[repr(C)]
+    struct AudioStreamBasicDescription {
+        mSampleRate: f64,
+        mFormatID: u32,
+        mFormatFlags: u32,
+        mBytesPerPacket: u32,
+        mFramesPerPacket: u32,
+        mBytesPerFrame: u32,
+        mChannelsPerFrame: u32,
+        mBitsPerChannel: u32,
+        mReserved: u32,
+    }
+
+    #[repr(C)]
+    struct AudioQueueBuffer {
+        mAudioDataBytesCapacity: u32,
+        mAudioData: *mut c_void,
+        mAudioDataByteSize: u32,
+        mUserData: *mut c_void,
+        mPacketDescriptionCapacity: u32,
+        mPacketDescriptions: *mut c_void,
+        mPacketDescriptionCount: u32,
+    }
+
+    const K_AUDIO_FORMAT_LINEAR_PCM: u32 = 0x6C70_636D; // 'lpcm'
+    const K_LINEAR_PCM_FLAG_SIGNED_INTEGER: u32 = 4;
+    const K_LINEAR_PCM_FLAG_PACKED: u32 = 8;
+
+    type InputCallback = extern "C" fn(
+        *mut c_void,
+        AudioQueueRef,
+        AudioQueueBufferRef,
+        *const c_void,
+        u32,
+        *const c_void,
+    );
+
+    #[link(name = "AudioToolbox", kind = "framework")]
+    extern "C" {
+        fn AudioQueueNewInput(
+            format: *const AudioStreamBasicDescription,
+            callback: InputCallback,
+            user_data: *mut c_void,
+            run_loop: *const c_void,
+            run_loop_mode: *const c_void,
+            flags: u32,
+            out_queue: *mut AudioQueueRef,
+        ) -> OSStatus;
+        fn AudioQueueAllocateBuffer(
+            queue: AudioQueueRef,
+            byte_size: u32,
+            out_buffer: *mut AudioQueueBufferRef,
+        ) -> OSStatus;
+        fn AudioQueueEnqueueBuffer(
+            queue: AudioQueueRef,
+            buffer: AudioQueueBufferRef,
+            num_packet_descriptions: u32,
+            packet_descriptions: *const c_void,
+        ) -> OSStatus;
+        fn AudioQueueStart(queue: AudioQueueRef, start_time: *const c_void) -> OSStatus;
+        fn AudioQueueStop(queue: AudioQueueRef, immediate: u8) -> OSStatus;
+        fn AudioQueueDispose(queue: AudioQueueRef, immediate: u8) -> OSStatus;
+    }
+
+    extern "C" fn on_input(
+        user_data: *mut c_void,
+        queue: AudioQueueRef,
+        buffer: AudioQueueBufferRef,
+        _start_time: *const c_void,
+        _packets: u32,
+        _descriptions: *const c_void,
+    ) {
+        if user_data.is_null() || buffer.is_null() || queue.is_null() {
+            return;
+        }
+        let capture = unsafe { &*(user_data as *const Capture) };
+        unsafe {
+            let b = &*buffer;
+            if !b.mAudioData.is_null() && b.mAudioDataByteSize >= 2 {
+                let count = (b.mAudioDataByteSize as usize) / 2;
+                let samples = std::slice::from_raw_parts(b.mAudioData as *const i16, count);
+                let mut peak = 0i32;
+                if let Ok(mut buf) = capture.samples.lock() {
+                    if buf.len() < MAX_SAMPLES {
+                        buf.extend_from_slice(samples);
+                    }
+                    let start = samples.len().saturating_sub(64);
+                    for s in &samples[start..] {
+                        peak = peak.max((*s as i32).abs());
+                    }
+                }
+                capture
+                    .level
+                    .store(peak.min(32767) as u32, Ordering::Relaxed);
+                let raw = band_energy(samples);
+                if let Ok(mut bands) = capture.bands.lock() {
+                    for (i, target) in raw.iter().enumerate() {
+                        let prev = bands[i];
+                        // Fast attack, slower release: the meter follows a voice
+                        // rather than flickering with every buffer.
+                        bands[i] = if *target > prev {
+                            prev + (target - prev) * 0.65
+                        } else {
+                            prev * 0.80 + target * 0.20
+                        };
+                    }
+                }
+            }
+            let _ = AudioQueueEnqueueBuffer(queue, buffer, 0, std::ptr::null());
+        }
+    }
+
+    pub struct Recorder {
+        queue: AudioQueueRef,
+        capture: Arc<Capture>,
+        /// The extra Arc handed to the audio thread, freed in Drop.
+        user_data: *mut c_void,
+        started: std::time::Instant,
+    }
+
+    unsafe impl Send for Recorder {}
+
+    fn error_text(status: OSStatus) -> String {
+        format!(
+            "the microphone could not start (AudioQueue code {status}). Allow Flowline in System Settings › Privacy & Security › Microphone."
+        )
+    }
+
+    impl Recorder {
+        /// Start recording 16 kHz mono PCM. `preferred` is only a hint; macOS uses
+        /// the system default input, which is the one the settings row shows.
+        pub fn start(preferred: Option<&str>) -> Result<Recorder, String> {
+            let _ = preferred;
+            let format = AudioStreamBasicDescription {
+                mSampleRate: TARGET_RATE as f64,
+                mFormatID: K_AUDIO_FORMAT_LINEAR_PCM,
+                mFormatFlags: K_LINEAR_PCM_FLAG_SIGNED_INTEGER | K_LINEAR_PCM_FLAG_PACKED,
+                mBytesPerPacket: 2,
+                mFramesPerPacket: 1,
+                mBytesPerFrame: 2,
+                mChannelsPerFrame: 1,
+                mBitsPerChannel: 16,
+                mReserved: 0,
+            };
+            let capture = Arc::new(Capture {
+                samples: Mutex::new(Vec::with_capacity(TARGET_RATE as usize * 30)),
+                level: AtomicU32::new(0),
+                bands: Arc::new(Mutex::new([0f32; 7])),
+            });
+            let user_data = Arc::into_raw(capture.clone()) as *mut c_void;
+            let mut queue: AudioQueueRef = std::ptr::null_mut();
+            let status = unsafe {
+                AudioQueueNewInput(
+                    &format,
+                    on_input,
+                    user_data,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    &mut queue,
+                )
+            };
+            if status != 0 {
+                unsafe { drop(Arc::from_raw(user_data as *const Capture)) };
+                return Err(error_text(status));
+            }
+            // Four 50 ms buffers: 20 meter updates a second, which the UI then
+            // interpolates to the display refresh rate.
+            for _ in 0..4 {
+                let mut buffer: AudioQueueBufferRef = std::ptr::null_mut();
+                let status = unsafe { AudioQueueAllocateBuffer(queue, 1600, &mut buffer) };
+                if status != 0 {
+                    unsafe {
+                        AudioQueueDispose(queue, 1);
+                        drop(Arc::from_raw(user_data as *const Capture));
+                    }
+                    return Err(error_text(status));
+                }
+                let status = unsafe { AudioQueueEnqueueBuffer(queue, buffer, 0, std::ptr::null()) };
+                if status != 0 {
+                    unsafe {
+                        AudioQueueDispose(queue, 1);
+                        drop(Arc::from_raw(user_data as *const Capture));
+                    }
+                    return Err(error_text(status));
+                }
+            }
+            let status = unsafe { AudioQueueStart(queue, std::ptr::null()) };
+            if status != 0 {
+                unsafe {
+                    AudioQueueDispose(queue, 1);
+                    drop(Arc::from_raw(user_data as *const Capture));
+                }
+                return Err(error_text(status));
+            }
+            Ok(Recorder {
+                queue,
+                capture,
                 user_data,
-                std::ptr::null(),
-                std::ptr::null(),
-                0,
-                &mut queue,
-            )
-        };
-        if status != 0 {
-            unsafe { drop(Arc::from_raw(user_data as *const Capture)) };
-            return Err(error_text(status));
+                started: std::time::Instant::now(),
+            })
         }
-        // Four 50 ms buffers: 20 meter updates a second, which the UI then
-        // interpolates to the display refresh rate.
-        for _ in 0..4 {
-            let mut buffer: AudioQueueBufferRef = std::ptr::null_mut();
-            let status = unsafe { AudioQueueAllocateBuffer(queue, 1600, &mut buffer) };
-            if status != 0 {
+
+        /// Peak input level, 0..1, for the listening meter.
+        pub fn level(&self) -> f32 {
+            self.capture.level.load(Ordering::Relaxed) as f32 / 32767.0
+        }
+
+        /// Seven smoothed voice bands, 0..1, updated every 100 ms.
+        pub fn bands(&self) -> [f32; 7] {
+            self.capture
+                .bands
+                .lock()
+                .map(|b| *b)
+                .unwrap_or([0f32; 7])
+        }
+
+        /// Share the live bands with the floating overlay, which repaints on its
+        /// own thread while the hub is hidden.
+        pub fn meter(&self) -> Arc<Mutex<[f32; 7]>> {
+            self.capture.bands.clone()
+        }
+
+        pub fn seconds(&self) -> f32 {
+            self.started.elapsed().as_secs_f32()
+        }
+
+        /// Stop capturing and encode the clip as a 16 kHz mono 16-bit WAV.
+        pub fn finish(self) -> Option<Vec<u8>> {
+            let samples = {
+                let mut buf = self.capture.samples.lock().ok()?;
+                std::mem::take(&mut *buf)
+            };
+            if samples.len() < (TARGET_RATE as usize / 20) {
+                return None;
+            }
+            Some(wav_from_pcm16(&samples))
+        }
+    }
+
+    impl Drop for Recorder {
+        fn drop(&mut self) {
+            if !self.queue.is_null() {
                 unsafe {
-                    AudioQueueDispose(queue, 1);
-                    drop(Arc::from_raw(user_data as *const Capture));
+                    let _ = AudioQueueStop(self.queue, 1);
+                    let _ = AudioQueueDispose(self.queue, 1);
                 }
-                return Err(error_text(status));
+                self.queue = std::ptr::null_mut();
             }
-            let status = unsafe { AudioQueueEnqueueBuffer(queue, buffer, 0, std::ptr::null()) };
-            if status != 0 {
-                unsafe {
-                    AudioQueueDispose(queue, 1);
-                    drop(Arc::from_raw(user_data as *const Capture));
+            if !self.user_data.is_null() {
+                unsafe { drop(Arc::from_raw(self.user_data as *const Capture)) };
+                self.user_data = std::ptr::null_mut();
+            }
+        }
+    }
+
+    /// Microphones with an input, read from the system's own audio report.
+    pub fn input_names() -> Vec<String> {
+        let mut out = Vec::new();
+        if let Ok(report) = std::process::Command::new("system_profiler")
+            .args(["SPAudioDataType", "-json"])
+            .output()
+        {
+            if let Ok(value) = serde_json::from_slice::<Value>(&report.stdout) {
+                walk_devices(&value, &mut out);
+            }
+        }
+        out
+    }
+
+    fn walk_devices(value: &Value, out: &mut Vec<String>) {
+        if let Some(object) = value.as_object() {
+            let name = object.get("_name").and_then(|v| v.as_str());
+            let inputs = object
+                .get("coreaudio_device_input")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if let Some(name) = name {
+                if inputs > 0 && !out.iter().any(|n| n == name) {
+                    out.push(name.to_string());
                 }
-                return Err(error_text(status));
+            }
+            for child in object.values() {
+                walk_devices(child, out);
+            }
+        } else if let Some(array) = value.as_array() {
+            for child in array {
+                walk_devices(child, out);
             }
         }
-        let status = unsafe { AudioQueueStart(queue, std::ptr::null()) };
-        if status != 0 {
-            unsafe {
-                AudioQueueDispose(queue, 1);
-                drop(Arc::from_raw(user_data as *const Capture));
-            }
-            return Err(error_text(status));
-        }
-        Ok(Recorder {
-            queue,
-            capture,
-            user_data,
-            started: std::time::Instant::now(),
-        })
     }
 
-    /// Peak input level, 0..1, for the listening meter.
-    pub fn level(&self) -> f32 {
-        self.capture.level.load(Ordering::Relaxed) as f32 / 32767.0
-    }
-
-    /// Seven smoothed voice bands, 0..1, updated every 100 ms.
-    pub fn bands(&self) -> [f32; 7] {
-        self.capture
-            .bands
-            .lock()
-            .map(|b| *b)
-            .unwrap_or([0f32; 7])
-    }
-
-    /// Share the live bands with the floating overlay, which repaints on its
-    /// own thread while the hub is hidden.
-    pub fn meter(&self) -> Arc<Mutex<[f32; 7]>> {
-        self.capture.bands.clone()
-    }
-
-    pub fn seconds(&self) -> f32 {
-        self.started.elapsed().as_secs_f32()
-    }
-
-    /// Stop capturing and encode the clip as a 16 kHz mono 16-bit WAV.
-    pub fn finish(self) -> Option<Vec<u8>> {
-        let samples = {
-            let mut buf = self.capture.samples.lock().ok()?;
-            std::mem::take(&mut *buf)
-        };
-        if samples.len() < (TARGET_RATE as usize / 20) {
-            return None;
-        }
-        Some(wav_from_pcm16(&samples))
-    }
 }
+#[cfg(target_os = "macos")]
+pub use mac_capture::{input_names, Recorder};
 
-impl Drop for Recorder {
-    fn drop(&mut self) {
-        if !self.queue.is_null() {
-            unsafe {
-                let _ = AudioQueueStop(self.queue, 1);
-                let _ = AudioQueueDispose(self.queue, 1);
-            }
-            self.queue = std::ptr::null_mut();
-        }
-        if !self.user_data.is_null() {
-            unsafe { drop(Arc::from_raw(self.user_data as *const Capture)) };
-            self.user_data = std::ptr::null_mut();
-        }
-    }
-}
-
-/// Microphones with an input, read from the system's own audio report.
-pub fn input_names() -> Vec<String> {
-    let mut out = Vec::new();
-    if let Ok(report) = std::process::Command::new("system_profiler")
-        .args(["SPAudioDataType", "-json"])
-        .output()
-    {
-        if let Ok(value) = serde_json::from_slice::<Value>(&report.stdout) {
-            walk_devices(&value, &mut out);
-        }
-    }
-    out
-}
-
-fn walk_devices(value: &Value, out: &mut Vec<String>) {
-    if let Some(object) = value.as_object() {
-        let name = object.get("_name").and_then(|v| v.as_str());
-        let inputs = object
-            .get("coreaudio_device_input")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        if let Some(name) = name {
-            if inputs > 0 && !out.iter().any(|n| n == name) {
-                out.push(name.to_string());
-            }
-        }
-        for child in object.values() {
-            walk_devices(child, out);
-        }
-    } else if let Some(array) = value.as_array() {
-        for child in array {
-            walk_devices(child, out);
-        }
-    }
-}
+#[cfg(target_os = "linux")]
+mod linux_capture;
+#[cfg(target_os = "linux")]
+pub use linux_capture::{input_names, Recorder};
 
 pub fn wav_from_samples(samples: &[f32]) -> Vec<u8> {
     let pcm: Vec<i16> = samples
@@ -481,6 +608,7 @@ mod tests {
         assert!((wav_seconds(&w) - 1.0).abs() < 0.01);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn finds_input_devices() {
         let names = input_names();
@@ -687,5 +815,96 @@ mod quiet_tests {
         s[100] = 20000;
         let (out, _) = boost_quiet(&wav_from_pcm16(&s));
         assert!(wav_peak(&out) <= 0.99);
+    }
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+
+    fn sine(freq: f32, rate: u32, secs: f32, amp: f32) -> Vec<f32> {
+        (0..(rate as f32 * secs) as usize)
+            .map(|i| (i as f32 * 2.0 * std::f32::consts::PI * freq / rate as f32).sin() * amp)
+            .collect()
+    }
+
+    fn zero_crossings(x: &[i16]) -> usize {
+        x.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count()
+    }
+
+    #[test]
+    fn resamples_48k_to_16k_keeping_length_and_pitch() {
+        let input = sine(440.0, 48_000, 1.0, 0.5);
+        let mut r = Resampler::new(48_000, 1);
+        let mut out = Vec::new();
+        r.process(&input, &mut out);
+        assert!((out.len() as i64 - 16_000).abs() <= 3, "len {}", out.len());
+        // 440 Hz over one second crosses zero about 880 times.
+        let crossings = zero_crossings(&out) as i64;
+        assert!((crossings - 880).abs() <= 6, "crossings {crossings}");
+    }
+
+    #[test]
+    fn resamples_44k1_stereo_and_survives_odd_block_sizes() {
+        let mono = sine(300.0, 44_100, 1.0, 0.4);
+        let stereo: Vec<f32> = mono.iter().flat_map(|s| [*s, *s]).collect();
+        let mut r = Resampler::new(44_100, 2);
+        let mut out = Vec::new();
+        // Feed it in awkward pieces, like a sound card would.
+        for chunk in stereo.chunks(2 * 441 + 6) {
+            r.process(chunk, &mut out);
+        }
+        assert!((out.len() as i64 - 16_000).abs() <= 4, "len {}", out.len());
+        let crossings = zero_crossings(&out) as i64;
+        assert!((crossings - 600).abs() <= 6, "crossings {crossings}");
+    }
+
+    #[test]
+    fn blocks_give_the_same_result_as_one_piece() {
+        let input = sine(500.0, 48_000, 0.5, 0.5);
+        let mut whole = Vec::new();
+        Resampler::new(48_000, 1).process(&input, &mut whole);
+        let mut pieces = Vec::new();
+        let mut r = Resampler::new(48_000, 1);
+        for chunk in input.chunks(333) {
+            r.process(chunk, &mut pieces);
+        }
+        let n = whole.len().min(pieces.len());
+        assert!((whole.len() as i64 - pieces.len() as i64).abs() <= 2);
+        let worst = (0..n).map(|i| (whole[i] as i32 - pieces[i] as i32).abs()).max().unwrap();
+        assert!(worst < 400, "blocks drift apart by {worst}");
+    }
+
+    #[test]
+    fn a_native_16k_mono_stream_passes_through() {
+        let input = sine(200.0, 16_000, 0.25, 0.5);
+        let mut out = Vec::new();
+        Resampler::new(16_000, 1).process(&input, &mut out);
+        assert_eq!(out.len(), input.len());
+    }
+
+    #[test]
+    fn ingest_keeps_samples_and_drives_the_meters() {
+        let capture = Capture {
+            samples: Mutex::new(Vec::new()),
+            level: AtomicU32::new(0),
+            bands: Arc::new(Mutex::new([0f32; 7])),
+        };
+        let tone: Vec<i16> = sine(440.0, 16_000, 0.1, 0.6)
+            .iter()
+            .map(|s| (s * 32767.0) as i16)
+            .collect();
+        let mut recent = Vec::new();
+        // Small blocks, as a sound card delivers them: the spectrum must still work.
+        for chunk in tone.chunks(160) {
+            ingest(&capture, chunk, &mut recent);
+        }
+        assert_eq!(capture.samples.lock().unwrap().len(), tone.len());
+        assert!(capture.level.load(Ordering::Relaxed) > 5_000);
+        let bands = *capture.bands.lock().unwrap();
+        assert!(bands.iter().any(|b| *b > 0.3), "meters stayed flat: {bands:?}");
+        // 440 Hz belongs in the third band (320–640 Hz).
+        let top = bands.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
+        assert_eq!(top, 2);
     }
 }

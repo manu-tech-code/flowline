@@ -154,7 +154,7 @@ impl Default for Settings {
             microphone: "System default".into(),
             hands_free: false,
             quiet_mode: false,
-            ptt: "Fn".into(),
+            ptt: crate::keys::default_ptt().into(),
             storage: 0,
             engine_endpoint: crate::engine::DEFAULT_BASE.into(),
             model: crate::engine::DEFAULT_MODEL.into(),
@@ -259,14 +259,20 @@ pub struct AppTone {
 const EMAIL_APPS: &[&str] = &[
     "mail", "outlook", "microsoft outlook", "spark", "superhuman", "airmail", "thunderbird",
     "mimestream", "hey", "proton mail", "canary mail", "newton mail", "mailspring",
+    // Linux window classes
+    "thunderbird", "evolution", "geary", "kmail", "claws-mail", "protonmail",
 ];
 const WORK_APPS: &[&str] = &[
     "slack", "microsoft teams", "teams", "zoom", "zoom.us", "webex", "mattermost", "rocket.chat",
     "google chat",
+    // Linux window classes
+    "teams-for-linux", "element",
 ];
 const PERSONAL_APPS: &[&str] = &[
     "messages", "whatsapp", "telegram", "signal", "discord", "messenger", "wechat", "line",
     "facetime", "instagram", "snapchat", "viber",
+    // Linux window classes
+    "telegramdesktop", "telegram-desktop", "whatsapp-for-linux", "whatsie", "pidgin", "hexchat",
 ];
 const EMAIL_TITLES: &[&str] = &[
     "gmail", "inbox", "outlook", "proton mail", "yahoo mail", "fastmail", "hey.com",
@@ -412,8 +418,7 @@ impl State {
                 return Some(std::path::PathBuf::from(p));
             }
         }
-        let home = std::env::var_os("HOME")?;
-        Some(std::path::PathBuf::from(home).join("Library/Application Support/Flowline/state.json"))
+        crate::paths::data_dir().map(|d| d.join("state.json"))
     }
     pub fn load() -> State {
         if let Some(p) = Self::path() {

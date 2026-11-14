@@ -12,7 +12,8 @@
 
 use std::ffi::{c_char, c_void, CString};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
-use std::sync::Mutex;
+
+use super::shared::*;
 
 type Id = *mut c_void;
 
@@ -597,19 +598,6 @@ fn xml_escape(s: &str) -> String {
 // Global hotkey
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HotkeyEvent {
-    Start,
-    Stop,
-    Cancel,
-    /// Option + digit: run transform number `n` (0-based) on the selection.
-    Transform(u8),
-    /// ⌥Space pressed / released: speak an edit instruction for the selection.
-    CommandStart,
-    CommandStop,
-    /// The tap could not be created, almost always a permission problem.
-    Denied,
-}
 
 extern "C" fn hid_input_value(
     _context: *mut c_void,
@@ -690,8 +678,6 @@ pub fn start_hid_keyboard_service() {
 }
 
 static HID_STARTED: AtomicBool = AtomicBool::new(false);
-static EVENTS: Mutex<Vec<HotkeyEvent>> = Mutex::new(Vec::new());
-static WAKE: Mutex<Option<eframe::egui::Context>> = Mutex::new(None);
 static TAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
 static TAP_OK: AtomicBool = AtomicBool::new(false);
@@ -703,23 +689,10 @@ static SPACE_DOWN: AtomicBool = AtomicBool::new(false);
 /// it swallow the Fn flags change so macOS does not also open Spotlight/emoji.
 static TAP_SUPPRESSES_FN: AtomicBool = AtomicBool::new(false);
 
-/// Bit n set = Option+(n+1) is a live Transforms shortcut. Set by the app each
-/// frame; zero (Transforms off or no text model) leaves the keys alone.
-static XFORM_SLOTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Digit key whose key-down we swallowed, so its key-up is swallowed too.
 static XFORM_KEY_HELD: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
 
-/// Command mode (hold ⌥Space) is live. Set by the app each frame.
-static COMMAND_ENABLED: AtomicBool = AtomicBool::new(false);
 static COMMAND_HELD: AtomicBool = AtomicBool::new(false);
-
-pub fn set_command_enabled(on: bool) {
-    COMMAND_ENABLED.store(on, Ordering::Relaxed);
-}
-
-pub fn set_transform_slots(mask: u32) {
-    XFORM_SLOTS.store(mask, Ordering::Relaxed);
-}
 
 /// ANSI digit key codes 1…9 in order of the number row.
 pub fn digit_slot(keycode: i64) -> Option<u32> {
@@ -735,29 +708,6 @@ pub fn digit_slot(keycode: i64) -> Option<u32> {
         25 => Some(8),
         _ => None,
     }
-}
-
-/// Ask the UI for a frame, even while the window is hidden in the menu bar.
-pub fn wake() {
-    if let Some(ctx) = WAKE.lock().ok().and_then(|w| w.clone()) {
-        ctx.request_repaint();
-    }
-}
-
-pub fn push_event(event: HotkeyEvent) {
-    if let Ok(mut q) = EVENTS.lock() {
-        q.push(event);
-    }
-    if let Some(ctx) = WAKE.lock().ok().and_then(|w| w.clone()) {
-        ctx.request_repaint();
-    }
-}
-
-pub fn take_events() -> Vec<HotkeyEvent> {
-    EVENTS
-        .lock()
-        .map(|mut q| std::mem::take(&mut *q))
-        .unwrap_or_default()
 }
 
 pub fn hotkey_running() -> bool {
@@ -1176,23 +1126,8 @@ extern "C" fn tap_callback(
 // Menu-bar item
 // ---------------------------------------------------------------------------
 
-static SHOW_REQUESTED: AtomicBool = AtomicBool::new(false);
-static PERMISSIONS_REQUESTED: AtomicBool = AtomicBool::new(false);
-static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static TRAY_TARGET: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static TRAY_ITEM: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-
-pub fn take_show_request() -> bool {
-    SHOW_REQUESTED.swap(false, Ordering::SeqCst)
-}
-
-pub fn take_quit_request() -> bool {
-    QUIT_REQUESTED.swap(false, Ordering::SeqCst)
-}
-
-pub fn take_permissions_request() -> bool {
-    PERMISSIONS_REQUESTED.swap(false, Ordering::SeqCst)
-}
 
 extern "C" fn tray_action(_this: Id, _cmd: *mut c_void, sender: Id) {
     unsafe {
@@ -1336,4 +1271,19 @@ mod tests {
         assert_eq!(HOTKEY_MODE.load(Ordering::Relaxed), 1);
         set_hotkey_mode("Fn");
     }
+}
+
+/// What to tell the person when the global key cannot be captured.
+pub fn denied_hint() -> &'static str {
+    "Allow Accessibility for Flowline to use Fn anywhere"
+}
+
+/// Open a file or folder in Finder.
+pub fn open_path(path: &std::path::Path) {
+    let _ = std::process::Command::new("open").arg(path).spawn();
+}
+
+/// macOS reopens the window from the menu-bar item, not by launching again.
+pub fn signal_running_instance() -> bool {
+    false
 }

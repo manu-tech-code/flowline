@@ -11,73 +11,105 @@
 //! The app decides what to do with that (see `features.rs`). This module
 //! never records, reads window titles or looks at audio.
 
-use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-#[repr(C)]
-struct PropertyAddress {
-    selector: u32,
-    scope: u32,
-    element: u32,
-}
+#[cfg(target_os = "macos")]
+mod coreaudio {
+    use std::ffi::c_void;
 
-#[link(name = "CoreAudio", kind = "framework")]
-extern "C" {
-    fn AudioObjectGetPropertyData(
-        object: u32,
-        address: *const PropertyAddress,
-        qualifier_size: u32,
-        qualifier: *const c_void,
-        size: *mut u32,
-        data: *mut c_void,
-    ) -> i32;
-}
-
-const SYSTEM_OBJECT: u32 = 1;
-const SCOPE_GLOBAL: u32 = 0x676C_6F62; // 'glob'
-const DEFAULT_INPUT_DEVICE: u32 = 0x6449_6E20; // 'dIn '
-const IS_RUNNING_SOMEWHERE: u32 = 0x676F_6E65; // 'gone'
-
-/// True while any process (including this one) has the default input open.
-pub fn mic_in_use() -> bool {
-    unsafe {
-        let addr = PropertyAddress {
-            selector: DEFAULT_INPUT_DEVICE,
-            scope: SCOPE_GLOBAL,
-            element: 0,
-        };
-        let mut device: u32 = 0;
-        let mut size = std::mem::size_of::<u32>() as u32;
-        let status = AudioObjectGetPropertyData(
-            SYSTEM_OBJECT,
-            &addr,
-            0,
-            std::ptr::null(),
-            &mut size,
-            &mut device as *mut u32 as *mut c_void,
-        );
-        if status != 0 || device == 0 {
-            return false;
-        }
-        let addr = PropertyAddress {
-            selector: IS_RUNNING_SOMEWHERE,
-            scope: SCOPE_GLOBAL,
-            element: 0,
-        };
-        let mut running: u32 = 0;
-        let mut size = std::mem::size_of::<u32>() as u32;
-        let status = AudioObjectGetPropertyData(
-            device,
-            &addr,
-            0,
-            std::ptr::null(),
-            &mut size,
-            &mut running as *mut u32 as *mut c_void,
-        );
-        status == 0 && running != 0
+    #[repr(C)]
+    struct PropertyAddress {
+        selector: u32,
+        scope: u32,
+        element: u32,
     }
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    extern "C" {
+        fn AudioObjectGetPropertyData(
+            object: u32,
+            address: *const PropertyAddress,
+            qualifier_size: u32,
+            qualifier: *const c_void,
+            size: *mut u32,
+            data: *mut c_void,
+        ) -> i32;
+    }
+
+    const SYSTEM_OBJECT: u32 = 1;
+    const SCOPE_GLOBAL: u32 = 0x676C_6F62; // 'glob'
+    const DEFAULT_INPUT_DEVICE: u32 = 0x6449_6E20; // 'dIn '
+    const IS_RUNNING_SOMEWHERE: u32 = 0x676F_6E65; // 'gone'
+
+    /// True while any process (including this one) has the default input open.
+    pub fn mic_in_use() -> bool {
+        unsafe {
+            let addr = PropertyAddress {
+                selector: DEFAULT_INPUT_DEVICE,
+                scope: SCOPE_GLOBAL,
+                element: 0,
+            };
+            let mut device: u32 = 0;
+            let mut size = std::mem::size_of::<u32>() as u32;
+            let status = AudioObjectGetPropertyData(
+                SYSTEM_OBJECT,
+                &addr,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut device as *mut u32 as *mut c_void,
+            );
+            if status != 0 || device == 0 {
+                return false;
+            }
+            let addr = PropertyAddress {
+                selector: IS_RUNNING_SOMEWHERE,
+                scope: SCOPE_GLOBAL,
+                element: 0,
+            };
+            let mut running: u32 = 0;
+            let mut size = std::mem::size_of::<u32>() as u32;
+            let status = AudioObjectGetPropertyData(
+                device,
+                &addr,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut running as *mut u32 as *mut c_void,
+            );
+            status == 0 && running != 0
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+use coreaudio::mic_in_use;
+
+/// True while another app is recording from a microphone. Linux asks the sound
+/// server (PulseAudio or PipeWire's `pactl`) for its recording streams and
+/// ignores Flowline's own.
+#[cfg(target_os = "linux")]
+pub fn mic_in_use() -> bool {
+    std::process::Command::new("pactl")
+        .args(["list", "source-outputs"])
+        .output()
+        .map(|o| other_app_is_recording(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or(false)
+}
+
+/// Read `pactl list source-outputs`: is any stream that is not Flowline's, and
+/// is not paused ("Corked"), recording?
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub fn other_app_is_recording(listing: &str) -> bool {
+    listing.split("Source Output #").skip(1).any(|stream| {
+        let lower = stream.to_lowercase();
+        let paused = lower.contains("corked: yes");
+        let ours = lower.contains("flowline");
+        // The volume-meter streams a mixer or settings panel opens are not calls.
+        let meter = lower.contains("peak detect") || lower.contains("volume meter");
+        !paused && !ours && !meter
+    })
 }
 
 /// A meeting app found running. `in_call` means the app has a helper that
@@ -109,16 +141,55 @@ pub fn classify(processes: &str) -> Option<App> {
     if processes.contains("/Slack.app/") {
         return Some(App { name: "Slack", in_call: false });
     }
+    #[cfg(target_os = "linux")]
+    for (needle, name) in LINUX_APPS {
+        if processes.lines().any(|l| process_matches(l, needle)) {
+            return Some(App { name, in_call: false });
+        }
+    }
     None
 }
 
-pub const BROWSERS: [&str; 6] = [
+/// Linux process names (from `ps -axo args=`, so these are command lines).
+#[cfg(target_os = "linux")]
+const LINUX_APPS: [(&str, &str); 8] = [
+    ("zoom", "Zoom"),
+    ("teams-for-linux", "Microsoft Teams"),
+    ("teams", "Microsoft Teams"),
+    ("webex", "Webex"),
+    ("slack", "Slack"),
+    ("discord", "Discord"),
+    ("skypeforlinux", "Skype"),
+    ("signal-desktop", "Signal"),
+];
+
+/// Does this command line run the program called `name`? Matches the program's
+/// own file name, not an argument that happens to contain it.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn process_matches(command_line: &str, name: &str) -> bool {
+    let program = command_line.split_whitespace().next().unwrap_or("");
+    let file = program.rsplit('/').next().unwrap_or("").to_lowercase();
+    file == name || file.starts_with(&format!("{name}-")) || file.starts_with(&format!("{name}."))
+}
+
+/// Browser names as macOS reports them, and window classes as Linux does.
+pub const BROWSERS: [&str; 16] = [
     "Google Chrome",
     "Safari",
     "Arc",
     "Firefox",
     "Microsoft Edge",
     "Brave Browser",
+    "google-chrome",
+    "chromium",
+    "brave-browser",
+    "microsoft-edge",
+    "vivaldi-stable",
+    "opera",
+    "epiphany",
+    "librewolf",
+    "zen",
+    "navigator",
 ];
 
 #[derive(Clone, Default)]
@@ -141,8 +212,11 @@ pub fn snapshot() -> Snapshot {
 }
 
 fn running_processes() -> String {
+    // macOS `comm` is the full executable path; on Linux it is only the short
+    // name, so ask for the whole command line instead.
+    let column = if cfg!(target_os = "macos") { "comm=" } else { "args=" };
     std::process::Command::new("ps")
-        .args(["-axo", "comm="])
+        .args(["-axo", column])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
@@ -187,6 +261,7 @@ pub fn start(wake: impl Fn() + Send + 'static) {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn zoom_is_only_a_meeting_when_cpthost_runs() {
         let idle = "/Applications/zoom.us.app/Contents/MacOS/zoom.us\n/usr/bin/foo";
@@ -195,11 +270,48 @@ mod tests {
         assert_eq!(classify(live), Some(App { name: "Zoom", in_call: true }));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn zoom_on_linux_is_a_weak_signal_needing_the_microphone() {
+        // No call-only helper process exists to prove a meeting, so a running
+        // Zoom only counts once the microphone is busy too (in_call is false).
+        let zoom = "/opt/zoom/zoom --url=zoommtg://example\n/usr/bin/foo";
+        assert_eq!(classify(zoom), Some(App { name: "Zoom", in_call: false }));
+        assert_eq!(classify("/usr/bin/foo\n/usr/bin/bar"), None);
+        // A file that merely mentions zoom is not Zoom.
+        assert_eq!(classify("/usr/bin/vim zoom-notes.txt"), None);
+    }
+
     #[test]
     fn other_apps_are_recognised_but_not_in_call() {
         let teams = "/Applications/Microsoft Teams.app/Contents/MacOS/MSTeams";
         assert_eq!(classify(teams), Some(App { name: "Microsoft Teams", in_call: false }));
         assert_eq!(classify("/System/Applications/Notes.app/Contents/MacOS/Notes"), None);
+    }
+
+    #[test]
+    fn pactl_listing_tells_other_apps_from_flowline_and_paused_streams() {
+        let none = "";
+        assert!(!other_app_is_recording(none));
+        let zoom = "Source Output #12\n\tCorked: no\n\tProperties:\n\t\tapplication.name = \"ZOOM VoiceEngine\"\n";
+        assert!(other_app_is_recording(zoom));
+        let ours = "Source Output #3\n\tCorked: no\n\tProperties:\n\t\tapplication.name = \"Flowline\"\n";
+        assert!(!other_app_is_recording(ours));
+        let paused = "Source Output #4\n\tCorked: yes\n\tProperties:\n\t\tapplication.name = \"Firefox\"\n";
+        assert!(!other_app_is_recording(paused));
+        let meter = "Source Output #5\n\tCorked: no\n\tProperties:\n\t\tapplication.name = \"PulseAudio Volume Control\"\n\t\tmedia.name = \"Peak detect\"\n";
+        assert!(!other_app_is_recording(meter));
+        let mixed = format!("{ours}{zoom}");
+        assert!(other_app_is_recording(&mixed), "a real call next to our own stream still counts");
+    }
+
+    #[test]
+    fn process_names_are_matched_by_program_not_by_argument() {
+        assert!(process_matches("/opt/zoom/zoom --url=zoommtg://x", "zoom"));
+        assert!(process_matches("/usr/bin/teams-for-linux", "teams-for-linux"));
+        assert!(process_matches("/usr/lib/slack/slack --type=renderer", "slack"));
+        assert!(!process_matches("/usr/bin/vim notes-about-zoom.txt", "zoom"));
+        assert!(!process_matches("/usr/bin/grep slack", "slack"));
     }
 
     #[test]

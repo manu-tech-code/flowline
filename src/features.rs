@@ -61,6 +61,88 @@ pub enum MeetingChoice {
     Later,
 }
 
+/// What to tell the person when Flowline cannot press keys in other apps.
+fn paste_setup_hint(feature: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("Allow Accessibility so Flowline can copy and paste for {feature}")
+    } else {
+        format!("Paste access is not set up, so {feature} cannot work yet. See Settings → System.")
+    }
+}
+
+/// Ask whether to start a note for a detected meeting. macOS uses a system
+/// dialog through AppleScript; Linux uses zenity, then kdialog. With neither,
+/// there is no way to ask, so the answer is "not now".
+fn ask_meeting_dialog(label: &str) -> MeetingChoice {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display dialog \"{label} looks like a meeting. Start a note?\" \
+             with title \"Flowline\" \
+             buttons {{\"Not a meeting\", \"Not now\", \"Start note\"}} \
+             default button \"Start note\" giving up after 40"
+        );
+        let out = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        parse_meeting_choice(&out)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let text = format!("{label} looks like a meeting. Start a note?");
+        let zenity = std::process::Command::new("zenity")
+            .args([
+                "--question",
+                "--title=Flowline",
+                &format!("--text={text}"),
+                "--ok-label=Start note",
+                "--cancel-label=Not now",
+                "--extra-button=Not a meeting",
+                "--timeout=40",
+            ])
+            .output();
+        if let Ok(out) = zenity {
+            return parse_zenity_choice(
+                out.status.code().unwrap_or(-1),
+                &String::from_utf8_lossy(&out.stdout),
+            );
+        }
+        let kdialog = std::process::Command::new("kdialog")
+            .args([
+                "--title",
+                "Flowline",
+                "--yesnocancel",
+                &text,
+                "--yes-label",
+                "Start note",
+                "--no-label",
+                "Not now",
+                "--cancel-label",
+                "Not a meeting",
+            ])
+            .status();
+        return match kdialog.ok().and_then(|s| s.code()) {
+            Some(0) => MeetingChoice::Start,
+            Some(2) => MeetingChoice::Ignore,
+            _ => MeetingChoice::Later,
+        };
+    }
+}
+
+/// zenity's answer: exit 0 = "Start note"; the extra button prints its label
+/// and exits 1; "Not now" exits 1 with nothing; a timeout exits 5.
+pub fn parse_zenity_choice(code: i32, stdout: &str) -> MeetingChoice {
+    if code == 0 {
+        MeetingChoice::Start
+    } else if stdout.contains("Not a meeting") {
+        MeetingChoice::Ignore
+    } else {
+        MeetingChoice::Later
+    }
+}
+
 /// Parse osascript's `button returned:X, gave up:false` answer.
 pub fn parse_meeting_choice(out: &str) -> MeetingChoice {
     if out.contains("gave up:true") {
@@ -283,7 +365,7 @@ impl App {
         }
         if !platform::accessibility_granted() {
             platform::request_accessibility();
-            self.toast("Allow Accessibility so Flowline can copy and paste for Transforms".into());
+            self.toast(paste_setup_hint("Transforms"));
             return;
         }
         self.ext.sel_busy = true;
@@ -329,7 +411,7 @@ impl App {
         }
         if !platform::accessibility_granted() {
             platform::request_accessibility();
-            self.toast("Allow Accessibility so Flowline can copy and paste for commands".into());
+            self.toast(paste_setup_hint("commands"));
             return;
         }
         self.ext.cmd_active = true;
@@ -399,7 +481,10 @@ impl App {
                     });
                 });
             }
-            _ => end(self, "Select some text first, then hold ⌥Space".into()),
+            _ => end(
+                self,
+                format!("Select some text first, then hold {}", crate::keys::command_key()),
+            ),
         }
         true
     }
@@ -747,7 +832,7 @@ impl App {
             }
             None if snap.mic_secs >= 8.0 && someone_else => {
                 let front = platform::frontmost_app().unwrap_or_default();
-                if meeting::BROWSERS.iter().any(|b| front == *b) {
+                if crate::model::is_browser(&front) {
                     Some(("a browser call".to_string(), "Browser".to_string()))
                 } else {
                     None
@@ -777,21 +862,11 @@ impl App {
                 self.ext.meeting_dialog = true;
                 let tx = self.ext.tx.clone();
                 std::thread::spawn(move || {
-                    let script = format!(
-                        "display dialog \"{label} looks like a meeting. Start a note?\" \
-                         with title \"Flowline\" \
-                         buttons {{\"Not a meeting\", \"Not now\", \"Start note\"}} \
-                         default button \"Start note\" giving up after 40"
-                    );
-                    let out = std::process::Command::new("osascript")
-                        .args(["-e", &script])
-                        .output()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-                        .unwrap_or_default();
+                    let choice = ask_meeting_dialog(&label);
                     let _ = tx.send(Msg::MeetingChoice {
                         key,
                         label,
-                        choice: parse_meeting_choice(&out),
+                        choice,
                     });
                 });
             }
@@ -1078,6 +1153,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zenity_answers_are_parsed() {
+        assert_eq!(parse_zenity_choice(0, ""), MeetingChoice::Start);
+        assert_eq!(parse_zenity_choice(1, "Not a meeting\n"), MeetingChoice::Ignore);
+        assert_eq!(parse_zenity_choice(1, ""), MeetingChoice::Later);
+        assert_eq!(parse_zenity_choice(5, ""), MeetingChoice::Later, "timed out");
+    }
 
     #[test]
     fn dialog_answers_are_parsed() {

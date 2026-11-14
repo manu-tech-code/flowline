@@ -3,8 +3,12 @@
 /dist/Flowline.app
 /dist/*.dmg
 /dist/*.sha256
+/dist/*.tar.gz
+/dist/*.AppImage
 /vendor/whisper/build
+/vendor/whisper/build-linux-*
 /vendor/whisper/whisper-cli
+/vendor/whisper/whisper-linux-*
 
 # Screenshots and scratch files from development runs
 /shots

@@ -92,8 +92,8 @@ pub fn show(ui: &mut egui::Ui, pal: Palette, time: f32) -> bool {
 
     // legal
     let legal_y = brect.bottom() + 26.0;
-    let l1 = "Everything stays on this Mac.";
-    let g = ui.fonts(|f| f.layout_no_wrap(l1.to_owned(), sans(12.5), pal.text_muted()));
+    let l1 = crate::keys::local("Everything stays on this Mac.");
+    let g = ui.fonts(|f| f.layout_no_wrap(l1.clone(), sans(12.5), pal.text_muted()));
     p.galley(
         Pos2::new(cx - g.size().x / 2.0, legal_y),
         g,

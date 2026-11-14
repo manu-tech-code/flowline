@@ -15,3 +15,17 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [profile.release]
 opt-level = 2
+
+# Linux only. Nothing here is built on macOS.
+[target.'cfg(target_os = "linux")'.dependencies]
+# Window system back ends (the macOS build uses AppKit through eframe's defaults).
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+# Keyboard (global shortcuts) and a virtual keyboard (paste) through the kernel's evdev/uinput.
+evdev = "0.13"
+libc = "0.2"
+# Microphone capture through ALSA (PipeWire and PulseAudio both provide ALSA devices).
+cpal = "0.15"
+# Clipboard on X11 and on Wayland compositors that support data-control.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+# Active window class and title on X11 (pure Rust, no X libraries to link).
+x11rb = "0.13"

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Flowline
+GenericName=Dictation
+Comment=Hold-to-talk dictation with on-device speech-to-text
+Exec=flowline
+Icon=flowline
+Terminal=false
+Categories=Utility;AudioVideo;Audio;
+Keywords=dictation;speech;voice;transcribe;whisper;
+StartupWMClass=flowline

@@ -675,18 +675,27 @@ use std::path::PathBuf;
 
 /// `~/Library/Application Support/Flowline/models`
 pub fn local_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join("Library/Application Support/Flowline/models"),
-    )
+    crate::paths::models_dir()
 }
 
 /// Where a release build keeps its own copy of the engine, relative to the
-/// executable: `Flowline.app/Contents/MacOS/flowline` →
-/// `Flowline.app/Contents/Resources/bin/whisper-cli`.
+/// executable.
+/// * macOS: `Flowline.app/Contents/MacOS/flowline` →
+///   `Flowline.app/Contents/Resources/bin/whisper-cli`.
+/// * Linux archive: `flowline` beside `bin/whisper-cli`.
+/// * Linux AppImage: `usr/bin/flowline` beside `usr/bin/whisper-cli`.
+pub fn bundled_whisper_paths(exe: &std::path::Path) -> Vec<PathBuf> {
+    let Some(dir) = exe.parent() else { return Vec::new() };
+    let mut out = vec![dir.join("bin/whisper-cli"), dir.join("whisper-cli")];
+    if let Some(up) = dir.parent() {
+        out.push(up.join("Resources/bin/whisper-cli"));
+    }
+    out
+}
+
+/// The first of those that exists (kept for callers that want one path).
 pub fn bundled_whisper_path(exe: &std::path::Path) -> Option<PathBuf> {
-    Some(exe.parent()?.parent()?.join("Resources/bin/whisper-cli"))
+    bundled_whisper_paths(exe).into_iter().find(|p| p.is_file())
 }
 
 /// Locate the whisper.cpp CLI. In order: `FLOWLINE_WHISPER_BIN`, the copy
@@ -702,9 +711,7 @@ pub fn whisper_bin() -> Option<PathBuf> {
         .ok()
         .and_then(|exe| bundled_whisper_path(&exe))
     {
-        if p.is_file() {
-            return Some(p);
-        }
+        return Some(p);
     }
     for candidate in [
         "/opt/homebrew/bin/whisper-cli",
@@ -857,9 +864,10 @@ pub fn local_model_file(configured: &str) -> Result<PathBuf, String> {
         .map(|m| dir.join(m))
         .next()
         .ok_or_else(|| {
-            "No speech model installed yet. Download one below; it is stored on this Mac and \
-             audio never leaves it."
-                .to_string()
+            crate::keys::local(
+                "No speech model installed yet. Download one below; it is stored on this Mac and \
+                 audio never leaves it.",
+            )
         })
 }
 
@@ -888,9 +896,14 @@ pub fn local_ready(configured: &str) -> (bool, String) {
         }
         (None, _) => (
             false,
-            "The on-device engine is missing from this copy of Flowline. Reinstall it, or when \
-             building from source run scripts/build-whisper.sh (or `brew install whisper-cpp`)."
-                .into(),
+            if cfg!(target_os = "macos") {
+                "The on-device engine is missing from this copy of Flowline. Reinstall it, or when \
+                 building from source run scripts/build-whisper.sh (or `brew install whisper-cpp`)."
+            } else {
+                "The on-device engine (whisper-cli) was not found. Use the release archive, which \
+                 includes it, or put whisper-cli on your PATH."
+            }
+            .into(),
         ),
         (_, Err(e)) => (false, e),
     }
@@ -977,12 +990,19 @@ mod portable_tests {
     use super::*;
 
     #[test]
-    fn bundled_engine_sits_beside_the_executable_in_the_app() {
-        let exe = std::path::Path::new("/Applications/Flowline.app/Contents/MacOS/flowline");
+    fn bundled_engine_is_looked_for_where_each_package_puts_it() {
+        let mac = std::path::Path::new("/Applications/Flowline.app/Contents/MacOS/flowline");
+        assert!(bundled_whisper_paths(mac).contains(&std::path::PathBuf::from(
+            "/Applications/Flowline.app/Contents/Resources/bin/whisper-cli"
+        )));
+        let archive = std::path::Path::new("/opt/flowline-0.3.0/flowline");
         assert_eq!(
-            bundled_whisper_path(exe).unwrap(),
-            std::path::PathBuf::from("/Applications/Flowline.app/Contents/Resources/bin/whisper-cli")
+            bundled_whisper_paths(archive)[0],
+            std::path::PathBuf::from("/opt/flowline-0.3.0/bin/whisper-cli")
         );
+        let appimage = std::path::Path::new("/tmp/.mount_x/usr/bin/flowline");
+        assert!(bundled_whisper_paths(appimage)
+            .contains(&std::path::PathBuf::from("/tmp/.mount_x/usr/bin/whisper-cli")));
     }
 
     #[test]

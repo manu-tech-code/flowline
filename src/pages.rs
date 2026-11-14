@@ -219,11 +219,17 @@ pub fn transforms(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect)
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         title(ui, pal, "Use Transforms");
+                        ui.set_max_width(ui.available_width() - 70.0);
                         muted(
                             ui,
                             pal,
-                            "Highlight text in any app, then press ⌥1 for Polish, ⌥2 for Prompt \
-                             Engineer, ⌥3–⌥9 for your own. The rewrite replaces the selection.",
+                            &format!(
+                                "Highlight text in any app, then press {} for Polish, {} for Prompt \
+                                 Engineer, {} for your own. The rewrite replaces the selection.",
+                                crate::keys::transform_key(1),
+                                crate::keys::transform_key(2),
+                                crate::keys::transform_custom_range(),
+                            ),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -245,12 +251,16 @@ pub fn transforms(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect)
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         title(ui, pal, "Command mode");
+                        ui.set_max_width(ui.available_width() - 70.0);
                         muted(
                             ui,
                             pal,
-                            "Select text in any app, hold ⌥Space and say what to do, such as \
-                             \"make this shorter\" or \"translate to French\", then release. The result \
-                             replaces the selection.",
+                            &format!(
+                                "Select text in any app, hold {} and say what to do, such as \
+                                 \"make this shorter\" or \"translate to French\", then release. The result \
+                                 replaces the selection.",
+                                crate::keys::command_key()
+                            ),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -271,6 +281,7 @@ pub fn transforms(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect)
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         title(ui, pal, "Auto apply after dictation");
+                        ui.set_max_width(ui.available_width() - 70.0);
                         muted(
                             ui,
                             pal,
@@ -332,7 +343,7 @@ pub fn transforms(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect)
                                     faint(ui, pal, "Built-in");
                                 }
                                 if i < 9 {
-                                    faint(ui, pal, &format!("⌥{}", i + 1));
+                                    faint(ui, pal, &crate::keys::transform_key(i + 1));
                                 }
                             });
                             ui.set_max_width(ui.available_width() - 190.0);
@@ -880,42 +891,56 @@ pub fn my_voice(ui: &mut egui::Ui, app: &mut App, pal: Palette, content: Rect) {
             ui.set_width(rect.width() - 14.0);
 
             // Learn from corrections
-            card(ui, pal, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        title(ui, pal, "Learn from my corrections");
-                        ui.set_max_width(ui.available_width() - 70.0);
-                        muted(
-                            ui,
-                            pal,
-                            "After Flowline pastes a dictation it watches that one text field for \
-                             20 seconds. If you fix a misheard word, the fix is added to your \
-                             Dictionary so it comes out right next time.",
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if switch(ui, pal, app.state.voice.learn, "voice-learn") {
-                            app.state.voice.learn = !app.state.voice.learn;
-                            if app.state.voice.learn && !crate::platform::accessibility_granted() {
-                                crate::platform::request_accessibility();
-                            }
-                            app.save();
-                        }
-                    });
+            if cfg!(not(target_os = "macos")) {
+                card(ui, pal, |ui| {
+                    title(ui, pal, "Learn from my corrections");
+                    muted(
+                        ui,
+                        pal,
+                        "Not available on Linux yet. It needs to read the text field you paste into, \
+                         which Linux only offers through the AT-SPI accessibility bus. Your \
+                         Dictionary, and the numbers below, work as usual.",
+                    );
                 });
-                ui.add_space(4.0);
-                faint(
-                    ui,
-                    pal,
-                    "Reads only the field you just pasted into, never password fields. Keeps just \
-                     the corrected word, not the text around it. Only small spelling fixes are \
-                     learned: rewrites and everyday words are ignored.",
-                );
-                if app.state.voice.learn && !crate::platform::accessibility_granted() {
-                    problem(ui, "Allow Accessibility for Flowline so it can read the field.");
-                }
-            });
-            ui.add_space(14.0);
+                ui.add_space(14.0);
+            } else {
+                card(ui, pal, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            title(ui, pal, "Learn from my corrections");
+                            ui.set_max_width(ui.available_width() - 70.0);
+                            muted(
+                                ui,
+                                pal,
+                                "After Flowline pastes a dictation it watches that one text field for \
+                                 20 seconds. If you fix a misheard word, the fix is added to your \
+                                 Dictionary so it comes out right next time.",
+                            );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if switch(ui, pal, app.state.voice.learn, "voice-learn") {
+                                app.state.voice.learn = !app.state.voice.learn;
+                                if app.state.voice.learn && !crate::platform::accessibility_granted() {
+                                    crate::platform::request_accessibility();
+                                }
+                                app.save();
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    faint(
+                        ui,
+                        pal,
+                        "Reads only the field you just pasted into, never password fields. Keeps just \
+                         the corrected word, not the text around it. Only small spelling fixes are \
+                         learned: rewrites and everyday words are ignored.",
+                    );
+                    if app.state.voice.learn && !crate::platform::accessibility_granted() {
+                        problem(ui, "Allow Accessibility for Flowline so it can read the field.");
+                    }
+                });
+                ui.add_space(14.0);
+            }
 
             // Learned list
             let mut remove: Option<usize> = None;
