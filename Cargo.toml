@@ -1,6 +1,6 @@
 [package]
 name = "flowline"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Hold-to-talk dictation for macOS: on-device speech-to-text, transforms, and meeting notes."
 repository = "https://github.com/manu-tech-code/flowline"
